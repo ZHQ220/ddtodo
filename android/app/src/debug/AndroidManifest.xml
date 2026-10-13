@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Flutter 调试模式需要 INTERNET 权限才能连接 VM Service（热重载 / DevTools）。
+         该权限只合入 debug 构建，release 包不含。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

@@ -1,0 +1,8 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # 本项目大量使用中文文案与长构造调用，放开这几条避免噪音。
+    prefer_const_constructors: false
+    avoid_print: false
+    use_build_context_synchronously: false

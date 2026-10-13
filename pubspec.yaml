@@ -1,0 +1,40 @@
+name: dd_todo
+description: "DDtodo —— 排班与待办清单（纯本地 SQLite，支持系统日历导入与 JSON 备份）"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  # 建议 Flutter 3.27+ / Dart 3.6+。若有更新的 SDK，pub 会自动选择更高版本的依赖。
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 本地数据库
+  sqflite: ^2.3.3
+  path: ^1.9.0
+  path_provider: ^2.1.4
+
+  # 轻量键值存储（用户偏好、上次选中的日期等）
+  shared_preferences: ^2.3.2
+
+  # 系统日历（只读导入）
+  #
+  # ⚠️ 暂时停用：device_calendar 最后更新于 2024-09，与较新的
+  #    Flutter / Android Gradle 插件存在不兼容风险，会让第一次打包失败。
+  #    为了让核心功能一次就能打出 APK，这一版先把它注释掉。
+  #    想重新启用：取消下面这行注释，并恢复 lib/services/calendar_service.dart
+  #    里标注的「启用版」实现（该文件末尾写了具体做法和原代码逻辑）。
+  # device_calendar: ^4.3.3
+
+  # 从本机选择 JSON 备份文件
+  file_picker: ^10.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- profile 构建同样需要 INTERNET 权限以便连接 VM Service。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>
