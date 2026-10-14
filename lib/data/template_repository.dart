@@ -137,12 +137,38 @@ class TemplateRepository extends ChangeNotifier {
     await load();
   }
 
-  /// 删除模板；连同其子任务。
+  /// 删除模板；连同其所有下级（子任务、孙任务…）。
   Future<void> delete(int id) async {
     final db = Db.instance;
-    await db.delete(AppDatabase.tTemplate, where: 'parent_id = ?', whereArgs: [id]);
-    await db.delete(AppDatabase.tTemplate, where: 'id = ?', whereArgs: [id]);
+    final ids = <int>[id, ..._descendantIds(id)];
+    final placeholders = List.filled(ids.length, '?').join(',');
+    await db.delete(
+      AppDatabase.tTemplate,
+      where: 'id IN ($placeholders)',
+      whereArgs: ids,
+    );
     await load();
+  }
+
+  /// 某个模板的全部下级 id（逐层向下，最多 8 层，带环保护）。
+  List<int> _descendantIds(int id) {
+    final result = <int>[];
+    var frontier = <int>[id];
+    var guard = 0;
+    while (frontier.isNotEmpty && guard++ < 8) {
+      final next = <int>[];
+      for (final t in _all) {
+        final tid = t.id;
+        final pid = t.parentId;
+        if (tid == null || pid == null) continue;
+        if (frontier.contains(pid) && !result.contains(tid)) {
+          result.add(tid);
+          next.add(tid);
+        }
+      }
+      frontier = next;
+    }
+    return result;
   }
 
   /// 清空某个班次的全部模板（含子任务）。
@@ -159,34 +185,39 @@ class TemplateRepository extends ChangeNotifier {
     await load();
   }
 
-  /// 把某个班次的模板整份复制到另一个班次。
+  /// 把某个班次的模板整份复制到另一个班次（含子任务、孙任务）。
   Future<int> copyToShift(int fromShiftId, int toShiftId) async {
     final src = forShift(fromShiftId);
     if (src.isEmpty) return 0;
     final db = Db.instance;
     final idMap = <int, int>{};
-    var order = 0;
-    for (final tpl in src.where((t) => t.parentId == null)) {
-      final id = await db.insert(AppDatabase.tTemplate, {
-        'shift_type_id': toShiftId,
-        'parent_id': null,
-        'title': tpl.title,
-        'remind_time': tpl.remindTime,
-        'sort_order': order++,
-      });
-      idMap[tpl.id!] = id;
-    }
-    order = 0;
-    for (final tpl in src.where((t) => t.parentId != null)) {
-      final newParent = idMap[tpl.parentId!];
-      if (newParent == null) continue;
-      await db.insert(AppDatabase.tTemplate, {
-        'shift_type_id': toShiftId,
-        'parent_id': newParent,
-        'title': tpl.title,
-        'remind_time': tpl.remindTime,
-        'sort_order': order++,
-      });
+    final srcIds = src.map((t) => t.id).whereType<int>().toSet();
+
+    // 一层一层往下复制：先顶层，再子任务，再孙任务……
+    var frontier = src.where((t) => !srcIds.contains(t.parentId)).toList();
+    var guard = 0;
+    while (frontier.isNotEmpty && guard++ < 8) {
+      var order = 0;
+      for (final tpl in frontier) {
+        final parentTemplateId = tpl.parentId;
+        final newParent =
+            parentTemplateId == null ? null : idMap[parentTemplateId];
+        if (parentTemplateId != null && newParent == null) continue;
+        final id = await db.insert(AppDatabase.tTemplate, {
+          'shift_type_id': toShiftId,
+          'parent_id': newParent,
+          'title': tpl.title,
+          'remind_time': tpl.remindTime,
+          'sort_order': order++,
+        });
+        idMap[tpl.id!] = id;
+      }
+      frontier = src
+          .where((t) =>
+              t.parentId != null &&
+              idMap.containsKey(t.parentId) &&
+              !idMap.containsKey(t.id))
+          .toList();
     }
     await load();
     return idMap.length;

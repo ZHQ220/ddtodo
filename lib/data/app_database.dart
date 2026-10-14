@@ -90,65 +90,9 @@ class AppDatabase {
     },
   ];
 
-  // ------------------------------------------------------ 预置任务模板
-  /// 预置的顶层模板任务（`shift` 为班次 kind）。
-  static const List<Map<String, String?>> presetRootTasks = [
-    {'shift': 'night', 'title': '报表', 'remind': null},
-    {'shift': 'night', 'title': '一般联系', 'remind': null},
-    {'shift': 'night', 'title': '机组启停', 'remind': null},
-    {'shift': 'morning', 'title': '早班报表', 'remind': '07:00'},
-    {'shift': 'morning', 'title': '机组启停', 'remind': null},
-    {'shift': 'middle', 'title': '中班报表1', 'remind': null},
-    {'shift': 'middle', 'title': '中班报表2', 'remind': null},
-    {'shift': 'middle', 'title': '省间现货审核', 'remind': null},
-    {'shift': 'middle', 'title': '机组启停', 'remind': null},
-  ];
-
-  /// 预置的子任务：挂在同班次下标题为 `parent` 的顶层任务上。
-  static const List<Map<String, String?>> presetChildTasks = [
-    {'shift': 'night', 'title': 'CPS拍照', 'parent': '报表', 'remind': null},
-    {'shift': 'night', 'title': '平衡表+截图', 'parent': '报表', 'remind': null},
-    {'shift': 'night', 'title': '国网云小报表', 'parent': '报表', 'remind': null},
-    {'shift': 'night', 'title': '危险点分析文档', 'parent': '报表', 'remind': null},
-    {'shift': 'night', 'title': '优化记录', 'parent': '报表', 'remind': null},
-    {'shift': 'night', 'title': '一体化日报', 'parent': '报表', 'remind': null},
-    {'shift': 'night', 'title': '市场截图', 'parent': '报表', 'remind': null},
-  ];
-
-  // ---------------------------------------------------- 预置周期模板
-  /// 常见排班周期模板，用户点一下就套用（可再编辑）。
-  static const List<Map<String, Object?>> presetPatterns = [
-    {
-      'name': '两班两倒（早早晚休）',
-      'pattern': 'A-A-C-R',
-      'letters': 'A:早班,C:晚班,R:休息',
-      'sort_order': 0,
-    },
-    {
-      'name': '四班三倒（早中晚休）',
-      'pattern': 'A-B-C-R',
-      'letters': 'A:早班,B:中班,C:晚班,R:休息',
-      'sort_order': 1,
-    },
-    {
-      'name': '白夜休休（工作工作休休）',
-      'pattern': 'D-D-R-R',
-      'letters': 'D:工作班,R:休息',
-      'sort_order': 2,
-    },
-    {
-      'name': '上二休二（工作休工作休）',
-      'pattern': 'D-R-D-R',
-      'letters': 'D:工作班,R:休息',
-      'sort_order': 3,
-    },
-    {
-      'name': '常白班（工作×5 休×2）',
-      'pattern': 'D-D-D-D-D-R-R',
-      'letters': 'D:工作班,R:休息',
-      'sort_order': 4,
-    },
-  ];
+  // ------------------------------------------------------ 预置内容说明
+  // 注意：任务模板与排班周期**不预置任何内容**。
+  // 模板与周期都从空白开始，由用户在界面上自己新建（见下方 seedTemplates / seedPatterns）。
 
   // ------------------------------------------------------------- 建表语句
   static const List<String> _createStatements = [
@@ -280,61 +224,10 @@ class AppDatabase {
     await batch.commit(noResult: true);
   }
 
-  /// 写入预置任务模板（父任务 + 子任务）。幂等：只有在表为空时才写入。
-  static Future<void> seedTemplates(DatabaseExecutor db) async {
-    final count =
-        Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM $tTemplate')) ?? 0;
-    if (count > 0) return;
+  /// 任务模板不预置内容：模板表保持空白，由用户自己新建。
+  /// （保留这个空实现，是为了 `seedAll` / `seedTable` 的调用点不用改。）
+  static Future<void> seedTemplates(DatabaseExecutor db) async {}
 
-    final shifts = await db.query(tShiftType);
-    final idByKind = <String, int>{};
-    for (final row in shifts) {
-      idByKind[(row['kind'] as String?) ?? ''] = row['id'] as int;
-    }
-
-    // 必须逐条 insert（而不是 batch）才能拿到父任务自增后的真实 id。
-    final parents = <String, int>{};
-    var order = 0;
-    for (final tpl in presetRootTasks) {
-      final shiftId = idByKind[tpl['shift']!];
-      if (shiftId == null) continue;
-      final id = await db.insert(tTemplate, {
-        'shift_type_id': shiftId,
-        'parent_id': null,
-        'title': tpl['title'],
-        'remind_time': tpl['remind'],
-        'sort_order': order++,
-      });
-      parents['${tpl['shift']}|${tpl['title']}'] = id;
-    }
-
-    var childOrder = 0;
-    final childBatch = db.batch();
-    for (final tpl in presetChildTasks) {
-      final shiftId = idByKind[tpl['shift']!];
-      final parentId = parents['${tpl['shift']}|${tpl['parent']}'];
-      if (shiftId == null || parentId == null) continue;
-      childBatch.insert(tTemplate, {
-        'shift_type_id': shiftId,
-        'parent_id': parentId,
-        'title': tpl['title'],
-        'remind_time': tpl['remind'],
-        'sort_order': childOrder++,
-      });
-    }
-    await childBatch.commit(noResult: true);
-  }
-
-  /// 写入预置排班周期模板。幂等：只有在表为空时才写入。
-  static Future<void> seedPatterns(DatabaseExecutor db) async {
-    final count = Sqflite.firstIntValue(
-            await db.rawQuery('SELECT COUNT(*) FROM $tPatternTemplate')) ??
-        0;
-    if (count > 0) return;
-    final batch = db.batch();
-    for (final row in presetPatterns) {
-      batch.insert(tPatternTemplate, row);
-    }
-    await batch.commit(noResult: true);
-  }
+  /// 排班周期模板不预置内容：周期由用户自己新建（可自己定周期天数）。
+  static Future<void> seedPatterns(DatabaseExecutor db) async {}
 }

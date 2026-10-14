@@ -130,41 +130,33 @@ class TaskRepository extends ChangeNotifier {
       var order = 0;
       final idByTemplate = <int, int>{};
 
-      // 先父后子：模板在数据库里也是先插父的，这里再排一次保证顺序。
+      // 先父后子（支持多层）：按「层级 → 顺序」排好后逐条插入，
+      // 这样每条任务都能从 idByTemplate 里拿到父任务的真实 id。
       final templateIds = templates.map((t) => t.id!).toSet();
-      int orderOf(TaskTemplate t) => t.sortOrder;
-      final roots = templates
-          .where((t) => !templateIds.contains(t.parentId))
-          .toList()
-        ..sort((a, b) => orderOf(a).compareTo(orderOf(b)));
-      final children = templates
-          .where((t) => templateIds.contains(t.parentId))
-          .toList()
-        ..sort((a, b) => orderOf(a).compareTo(orderOf(b)));
-
-      for (final tpl in roots) {
-        if (existingTemplateIds.contains(tpl.id!)) continue;
-        final id = await db.insert(AppDatabase.tDaily, {
-          'date': taskDate,
-          'shift_type_id': inst.shiftTypeId,
-          'shift_date': DayUtil.iso(d),
-          'title': tpl.title,
-          'is_completed': 0,
-          'is_custom': 0,
-          'source_type': TaskSource.app.name,
-          'remind_time': tpl.remindTime,
-          'parent_id': null,
-          'template_id': tpl.id,
-          'sort_order': order++,
-          'deleted': 0,
-        });
-        idByTemplate[tpl.id!] = id;
+      final byId = {for (final t in templates) t.id!: t};
+      int depthOf(TaskTemplate t) {
+        var depth = 0;
+        var cursor = t;
+        while (cursor.parentId != null && templateIds.contains(cursor.parentId)) {
+          final parent = byId[cursor.parentId];
+          if (parent == null || identical(parent, cursor)) break;
+          cursor = parent;
+          depth++;
+          if (depth > 8) break;
+        }
+        return depth;
       }
 
-      for (final tpl in children) {
+      final ordered = [...templates]..sort((a, b) {
+          final d = depthOf(a).compareTo(depthOf(b));
+          return d != 0 ? d : a.sortOrder.compareTo(b.sortOrder);
+        });
+
+      for (final tpl in ordered) {
         if (existingTemplateIds.contains(tpl.id!)) continue;
-        final parentTemplateId = tpl.parentId;
-        var parentDailyId = parentTemplateId == null ? null : idByTemplate[parentTemplateId];
+        final parentTemplateId = depthOf(tpl) == 0 ? null : tpl.parentId;
+        var parentDailyId =
+            parentTemplateId == null ? null : idByTemplate[parentTemplateId];
         parentDailyId ??= await _findParentDailyId(db, taskDate, parentTemplateId);
         final id = await db.insert(AppDatabase.tDaily, {
           'date': taskDate,
@@ -368,7 +360,9 @@ class TaskRepository extends ChangeNotifier {
 
   /// 勾选 / 取消勾选。
   ///
-  /// 联动规则：勾选末尾子任务会让所有未勾选的父级自动完成；取消子任务会清掉父级完成态。
+  /// 联动规则（支持多层：子任务 → 任务 → 更上层）：
+  /// * 勾选一个任务，如果它的所有兄弟都勾完了，就自动勾上它的父任务，并继续往上；
+  /// * 取消勾选，则所有上级一并取消。
   Future<void> toggle(DailyTask task) async {
     final db = Db.instance;
     final next = !task.isCompleted;
@@ -380,30 +374,37 @@ class TaskRepository extends ChangeNotifier {
       whereArgs: [task.id],
     );
 
-    if (task.parentId != null) {
-      final parent = await _byId(task.parentId!);
-      if (parent != null) {
-        if (!next) {
+    var parentId = task.parentId;
+    var guard = 0;
+    while (parentId != null && guard++ < 8) {
+      final parent = await _byId(parentId);
+      if (parent == null) break;
+      if (!next) {
+        if (parent.isCompleted) {
           await db.update(
             AppDatabase.tDaily,
             {'is_completed': 0},
             where: 'id = ?',
             whereArgs: [parent.id],
           );
+        }
+      } else {
+        // 注意：要先落库再查兄弟节点，否则拿到的是勾选前的状态。
+        final siblings = await _childrenOf(parent.id!);
+        final allDone = siblings.isNotEmpty && siblings.every((c) => c.isCompleted);
+        if (allDone && !parent.isCompleted) {
+          await db.update(
+            AppDatabase.tDaily,
+            {'is_completed': 1},
+            where: 'id = ?',
+            whereArgs: [parent.id],
+          );
         } else {
-          // 注意：要先落库再查兄弟节点，否则拿到的是勾选前的状态。
-          final siblings = await _childrenOf(parent.id!);
-          final allDone = siblings.isNotEmpty && siblings.every((c) => c.isCompleted);
-          if (allDone && !parent.isCompleted) {
-            await db.update(
-              AppDatabase.tDaily,
-              {'is_completed': 1},
-              where: 'id = ?',
-              whereArgs: [parent.id],
-            );
-          }
+          // 上级还没全勾完，再往上也不会变。
+          break;
         }
       }
+      parentId = parent.parentId;
     }
     notifyListeners();
   }
@@ -429,7 +430,31 @@ class TaskRepository extends ChangeNotifier {
     return rows.map(DailyTask.fromMap).toList();
   }
 
-  /// 删除任务（连同子任务）。
+  /// 某个任务的全部下级（子任务、孙任务…），逐层向下查询。
+  Future<List<DailyTask>> _descendants(int id) async {
+    final result = <DailyTask>[];
+    var frontier = <int>[id];
+    var guard = 0;
+    while (frontier.isNotEmpty && guard++ < 8) {
+      final placeholders = List.filled(frontier.length, '?').join(',');
+      final rows = await Db.instance.query(
+        AppDatabase.tDaily,
+        where: 'parent_id IN ($placeholders) AND deleted = 0',
+        whereArgs: frontier,
+        orderBy: 'sort_order ASC, id ASC',
+      );
+      final fresh = rows
+          .map(DailyTask.fromMap)
+          .where((t) => t.id != null && !result.any((x) => x.id == t.id))
+          .toList();
+      if (fresh.isEmpty) break;
+      result.addAll(fresh);
+      frontier = fresh.map((t) => t.id!).toList();
+    }
+    return result;
+  }
+
+  /// 删除任务（连同所有下级：子任务、孙任务…）。
   ///
   /// * 模板实例：写 `deleted = 1` 墓碑，模板不受影响，**但同一天不会再次自动生成**
   ///   （`ensureDay` 的判重只看 `shift_date`，墓碑行仍然占位），次日照常生成；
@@ -439,25 +464,25 @@ class TaskRepository extends ChangeNotifier {
     final id = task.id;
     if (id == null) return;
 
-    final children = await _childrenOf(id);
-    final isTemplateInstance = task.templateId != null || children.any((c) => c.templateId != null);
+    final children = await _descendants(id);
+    final all = <int>[id, ...children.map((c) => c.id!).toList()];
+    final placeholders = List.filled(all.length, '?').join(',');
+    final isTemplateInstance = task.templateId != null ||
+        children.any((c) => c.templateId != null);
 
     if (isTemplateInstance) {
       await db.update(
         AppDatabase.tDaily,
         {'deleted': 1},
-        where: 'id = ?',
-        whereArgs: [id],
-      );
-      await db.update(
-        AppDatabase.tDaily,
-        {'deleted': 1},
-        where: 'parent_id = ?',
-        whereArgs: [id],
+        where: 'id IN ($placeholders)',
+        whereArgs: all,
       );
     } else {
-      await db.delete(AppDatabase.tDaily, where: 'parent_id = ?', whereArgs: [id]);
-      await db.delete(AppDatabase.tDaily, where: 'id = ?', whereArgs: [id]);
+      await db.delete(
+        AppDatabase.tDaily,
+        where: 'id IN ($placeholders)',
+        whereArgs: all,
+      );
     }
     notifyListeners();
   }

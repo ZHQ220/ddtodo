@@ -673,22 +673,147 @@ class _CycleEditor extends StatefulWidget {
 
 class _CycleEditorState extends State<_CycleEditor> {
   late final TextEditingController _nameController;
+  late final TextEditingController _daysController;
   late DateTime _startDate;
   late List<int> _pattern;
+
+  /// 周期天数上限，避免误输入一个大数字把界面撑爆。
+  static const int _maxDays = 60;
 
   @override
   void initState() {
     super.initState();
     final e = widget.existing;
     _nameController = TextEditingController(text: e?.name ?? '');
+    // 新建时先给 7 个「空」格子：想排几天就填几天，其余留空即可。
+    _pattern = e == null ? List<int>.filled(7, 0) : [...e.pattern];
+    if (_pattern.isEmpty) _pattern = List<int>.filled(1, 0);
+    _daysController = TextEditingController(text: '${_pattern.length}');
     _startDate = DayUtil.tryParseIso(e?.startDate) ?? DayUtil.today();
-    _pattern = e == null ? <int>[] : [...e.pattern];
   }
 
   @override
   void dispose() {
     _nameController.dispose();
+    _daysController.dispose();
     super.dispose();
+  }
+
+  /// 把周期长度改成 [days] 天：不够的补「空」，多出来的从末尾删掉。
+  void _resizeDays(int days) {
+    final target = days.clamp(1, _maxDays).toInt();
+    setState(() {
+      if (target > _pattern.length) {
+        _pattern.addAll(List<int>.filled(target - _pattern.length, 0));
+      } else if (target < _pattern.length) {
+        _pattern.removeRange(target, _pattern.length);
+      }
+      _daysController.text = '${_pattern.length}';
+      _daysController.selection =
+          TextSelection.collapsed(offset: _daysController.text.length);
+    });
+  }
+
+  /// 设置第 [index] 天：班次 id，0 表示「空」（那天没有班次、不生成任务）。
+  void _setDay(int index, int value) {
+    if (index < 0 || index >= _pattern.length) return;
+    setState(() => _pattern[index] = value);
+  }
+
+  /// 删除第 [index] 天（后面的往前补一位）。
+  void _removeDay(int index) {
+    if (_pattern.length <= 1) return;
+    setState(() {
+      _pattern.removeAt(index);
+      _daysController.text = '${_pattern.length}';
+    });
+  }
+
+  /// 点某一格：选择这天排什么班，或留空。
+  Future<void> _editDay(int index) async {
+    final types = widget.state.shifts.shiftTypes.where((s) => !s.archived).toList();
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                title: Text('第 ${index + 1} 天',
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w600)),
+                subtitle: const Text('选择这天排什么班，或留空',
+                    style: TextStyle(fontSize: 12)),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const CircleAvatar(
+                    radius: 8, backgroundColor: Color(0xFFE3E7EA)),
+                title: const Text('留空（不排班）'),
+                onTap: () => Navigator.of(ctx).pop(0),
+              ),
+              for (final type in types)
+                ListTile(
+                  leading: CircleAvatar(
+                    radius: 8,
+                    backgroundColor: AppColors.fromHex(type.colorHex),
+                  ),
+                  title: Text(type.name),
+                  onTap: () => Navigator.of(ctx).pop(type.id!),
+                ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('删掉这一天'),
+                enabled: _pattern.length > 1,
+                onTap: () => Navigator.of(ctx).pop(-1),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked == null) return;
+    if (picked == -1) {
+      _removeDay(index);
+    } else {
+      _setDay(index, picked);
+    }
+  }
+
+  /// 周期里的一格：第几天 + 班次名（留空时显示「空」）。
+  Widget _dayChip(int index) {
+    final value = _pattern[index];
+    final type = value == 0 ? null : widget.state.shifts.byId(value);
+    final color =
+        type == null ? const Color(0xFFB6C0C6) : AppColors.fromHex(type.colorHex);
+    return InkWell(
+      onTap: () => _editDay(index),
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: type == null ? const Color(0xFFF2F4F6) : AppColors.tint(color, 0.12),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: type == null ? const Color(0xFFD7DDE1) : AppColors.tint(color, 0.5),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 5),
+            Text('${index + 1}.${type?.name ?? '空'}',
+                style: const TextStyle(fontSize: 11.5)),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -736,6 +861,7 @@ class _CycleEditorState extends State<_CycleEditor> {
               ),
               child: const Text(
                 '选中日期就是新周期的第 1 天，之后按下面的顺序无限循环。\n'
+                '留空的天不会有班次、也不会生成任务（月历上是空白）。\n'
                 '此规则只影响生效日期及以后，不会追溯调整历史排班。',
                 style: TextStyle(fontSize: 11.5, color: AppColors.textSecondary, height: 1.6),
               ),
@@ -743,31 +869,60 @@ class _CycleEditorState extends State<_CycleEditor> {
             const SizedBox(height: 14),
             Row(
               children: [
-                Text('周期顺序（${_pattern.length} 天）',
-                    style: const TextStyle(fontSize: 13)),
-                const Spacer(),
-                if (_pattern.isNotEmpty)
-                  TextButton(
-                    onPressed: () => setState(() {
-                      if (_pattern.isNotEmpty) _pattern.removeLast();
-                    }),
-                    child: const Text('删掉最后一天'),
+                const Text('周期天数', style: TextStyle(fontSize: 13)),
+                const SizedBox(width: 4),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 18,
+                  tooltip: '减一天',
+                  onPressed: () => _resizeDays(_pattern.length - 1),
+                  icon: const Icon(Icons.remove_circle_outline),
+                ),
+                SizedBox(
+                  width: 48,
+                  child: TextField(
+                    controller: _daysController,
+                    keyboardType: TextInputType.number,
+                    textAlign: TextAlign.center,
+                    decoration: appInputDecoration(hintText: '7'),
+                    onSubmitted: (v) {
+                      final n = int.tryParse(v.trim());
+                      if (n == null) {
+                        _daysController.text = '${_pattern.length}';
+                        return;
+                      }
+                      _resizeDays(n);
+                    },
                   ),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 18,
+                  tooltip: '加一天',
+                  onPressed: () => _resizeDays(_pattern.length + 1),
+                  icon: const Icon(Icons.add_circle_outline),
+                ),
+                const Spacer(),
+                TextButton(
+                  onPressed: () => setState(() {
+                    for (var i = 0; i < _pattern.length; i++) {
+                      _pattern[i] = 0;
+                    }
+                  }),
+                  child: const Text('全部留空'),
+                ),
               ],
             ),
-            const SizedBox(height: 4),
+            const Text(
+              '点某一格可以改这天排什么班；留空表示那天没有班次、也不生成任务。',
+              style: TextStyle(fontSize: 11.5, color: AppColors.textSecondary, height: 1.5),
+            ),
+            const SizedBox(height: 8),
             Wrap(
               spacing: 6,
               runSpacing: 6,
               children: [
-                for (var i = 0; i < _pattern.length; i++)
-                  InputChip(
-                    label: Text(
-                      '${i + 1}.${widget.state.shifts.byId(_pattern[i])?.name ?? '?'}',
-                      style: const TextStyle(fontSize: 11.5),
-                    ),
-                    onDeleted: () => setState(() => _pattern.removeAt(i)),
-                  ),
+                for (var i = 0; i < _pattern.length; i++) _dayChip(i),
               ],
             ),
             const SizedBox(height: 10),
@@ -777,6 +932,16 @@ class _CycleEditorState extends State<_CycleEditor> {
               spacing: 8,
               runSpacing: 4,
               children: [
+                ActionChip(
+                  avatar: const CircleAvatar(
+                      radius: 7, backgroundColor: Color(0xFFDDE3E7)),
+                  label: const Text('空'),
+                  onPressed: () => setState(() {
+                    if (_pattern.length >= _maxDays) return;
+                    _pattern.add(0);
+                    _daysController.text = '${_pattern.length}';
+                  }),
+                ),
                 for (final type in types)
                   ActionChip(
                     avatar: CircleAvatar(
@@ -784,7 +949,11 @@ class _CycleEditorState extends State<_CycleEditor> {
                       backgroundColor: AppColors.fromHex(type.colorHex),
                     ),
                     label: Text(type.name),
-                    onPressed: () => setState(() => _pattern.add(type.id!)),
+                    onPressed: () => setState(() {
+                      if (_pattern.length >= _maxDays) return;
+                      _pattern.add(type.id!);
+                      _daysController.text = '${_pattern.length}';
+                    }),
                   ),
               ],
             ),
@@ -797,18 +966,22 @@ class _CycleEditorState extends State<_CycleEditor> {
           child: const Text('取消'),
         ),
         FilledButton(
-          onPressed: _pattern.isEmpty
-              ? null
-              : () {
-                  final name = _nameController.text.trim().isEmpty
-                      ? '排班规则'
-                      : _nameController.text.trim();
-                  Navigator.of(context).pop(CycleDraft(
-                    name: name,
-                    startDate: _startDate,
-                    pattern: _pattern,
-                  ));
-                },
+          onPressed: () {
+            if (_pattern.every((v) => v == 0)) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('请至少给一天选上班次')),
+              );
+              return;
+            }
+            final name = _nameController.text.trim().isEmpty
+                ? '排班规则'
+                : _nameController.text.trim();
+            Navigator.of(context).pop(CycleDraft(
+              name: name,
+              startDate: _startDate,
+              pattern: _pattern,
+            ));
+          },
           child: const Text('保存'),
         ),
       ],
@@ -881,7 +1054,8 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
                         padding: EdgeInsets.only(left: 2, bottom: 8),
                         child: Text(
                           '班次确定后，这些任务会自动生成到当天的清单里：\n'
-                          '· 子任务全部勾选 → 父任务自动完成；\n'
+                          '· 最多三层：任务 → 子任务 → 孙任务，点「添加子任务 / 加下级」往下加；\n'
+                          '· 下一层全部勾选 → 上一层自动完成；\n'
                           '· 在清单里删除某条任务只影响那一天，第二天照常生成。',
                           style: TextStyle(
                             fontSize: 11.5,
@@ -951,47 +1125,77 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
             leading: NumberBadge(number: number, color: color),
             title: Text(root.title, style: const TextStyle(fontSize: 14.5)),
             subtitle: Text(
-              children.isEmpty ? '无子任务' : '${children.length} 个子任务',
+              _subtitleOf(children),
               style: const TextStyle(fontSize: 11.5),
             ),
             trailing: _templateMenu(root),
             onTap: () => _editTemplate(root),
           ),
-          if (children.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(left: 52, right: 8, bottom: 8),
-              child: Column(
-                children: [
-                  for (final child in children)
-                    Row(
-                      children: [
-                        const Icon(Icons.subdirectory_arrow_right,
-                            size: 14, color: AppColors.textMuted),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            child.title,
-                            style: const TextStyle(fontSize: 13),
-                          ),
-                        ),
-                        _templateMenu(child, compact: true),
-                      ],
-                    ),
-                ],
+          for (final entry in _descendantsOf(root)) _childRow(entry.key, entry.value),
+          Padding(
+            padding: const EdgeInsets.only(left: 52, bottom: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => _addTemplate(root.id),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('添加子任务', style: TextStyle(fontSize: 12.5)),
               ),
             ),
-          if (children.isEmpty)
-            Padding(
-              padding: const EdgeInsets.only(left: 52, bottom: 8),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () => _addTemplate(root.id),
-                  icon: const Icon(Icons.add, size: 16),
-                  label: const Text('添加子任务', style: TextStyle(fontSize: 12.5)),
-                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 子任务数量文案（含更下一层）。
+  String _subtitleOf(List<TaskTemplate> children) {
+    if (children.isEmpty) return '还没有子任务';
+    final grand = children
+        .map((c) => state.templates.childrenOf(c.id).length)
+        .fold<int>(0, (a, b) => a + b);
+    return grand == 0
+        ? '${children.length} 个子任务'
+        : '${children.length} 个子任务 + $grand 个孙任务';
+  }
+
+  /// 某个任务的全部下级（层级从 1 开始），最多三层：任务 → 子任务 → 孙任务。
+  List<MapEntry<TaskTemplate, int>> _descendantsOf(TaskTemplate root,
+      [int depth = 1]) {
+    final result = <MapEntry<TaskTemplate, int>>[];
+    if (depth > 2) return result;
+    for (final child in state.templates.childrenOf(root.id)) {
+      result.add(MapEntry(child, depth));
+      result.addAll(_descendantsOf(child, depth + 1));
+    }
+    return result;
+  }
+
+  /// 一行下级任务（缩进随层级增加）。孙任务（第 3 层）不能再加下级。
+  Widget _childRow(TaskTemplate tpl, int depth) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(30.0 + depth * 16, 0, 6, 2),
+      child: Row(
+        children: [
+          const Icon(Icons.subdirectory_arrow_right,
+              size: 14, color: AppColors.textMuted),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              tpl.title,
+              style: TextStyle(
+                fontSize: depth == 1 ? 13.5 : 12.5,
+                color: depth == 1 ? AppColors.textPrimary : AppColors.textSecondary,
               ),
             ),
+          ),
+          if (depth < 2)
+            TextButton.icon(
+              onPressed: () => _addTemplate(tpl.id),
+              icon: const Icon(Icons.add, size: 15),
+              label: const Text('加下级', style: TextStyle(fontSize: 12)),
+            ),
+          _templateMenu(tpl, compact: true),
         ],
       ),
     );

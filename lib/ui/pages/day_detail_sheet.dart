@@ -227,11 +227,7 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
       children: [
         _sectionLabel('班次任务', trailing: '${_doneCount(_shiftTasks)}/${_shiftTasks.length}'),
         for (var i = 0; i < roots.length; i++)
-          _taskCard(
-            roots[i],
-            _shiftTasks.where((t) => t.parentId == roots[i].id).toList(),
-            number: i + 1,
-          ),
+          _taskCard(roots[i], number: i + 1),
       ],
     );
   }
@@ -244,12 +240,7 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
       children: [
         _sectionLabel('独立事项', trailing: '${_doneCount(_customTasks)}/${_customTasks.length}'),
         for (var i = 0; i < roots.length; i++)
-          _taskCard(
-            roots[i],
-            _customTasks.where((t) => t.parentId == roots[i].id).toList(),
-            number: 0,
-            accent: AppColors.textSecondary,
-          ),
+          _taskCard(roots[i], number: 0, accent: AppColors.textSecondary),
       ],
     );
   }
@@ -307,21 +298,67 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
   int _doneCount(List<DailyTask> list) =>
       list.where((t) => t.parentId == null && t.isCompleted).length;
 
-  /// 一张任务卡（图 2 里的「编号方块 + 标题 + 重复标签 + 收起的子任务」）。
+  /// 当天的全部任务（三个板块合起来，用于找父子关系）。
+  List<DailyTask> get _allTasks =>
+      [..._shiftTasks, ..._customTasks, ..._importedTasks];
+
+  /// 某个任务的直接下级。
+  List<DailyTask> _childrenOf(DailyTask parent) {
+    final id = parent.id;
+    if (id == null) return const [];
+    return _allTasks.where((t) => t.parentId == id).toList();
+  }
+
+  /// 任务所处层级：顶层 = 0（决定缩进，以及还能不能再加下级）。
+  int _depthOf(DailyTask task) {
+    final all = _allTasks;
+    var depth = 0;
+    var cursor = task;
+    var guard = 0;
+    while (cursor.parentId != null && guard++ < 8) {
+      DailyTask? parent;
+      for (final t in all) {
+        if (t.id == cursor.parentId) {
+          parent = t;
+          break;
+        }
+      }
+      if (parent == null) break;
+      cursor = parent;
+      depth++;
+    }
+    return depth;
+  }
+
+  /// 某个任务的全部下级（层级从 1 开始），最多三层：任务 → 子任务 → 孙任务。
+  List<MapEntry<DailyTask, int>> _descendantsOf(DailyTask root,
+      [int depth = 1]) {
+    final result = <MapEntry<DailyTask, int>>[];
+    if (depth > 2) return result;
+    for (final child in _childrenOf(root)) {
+      result.add(MapEntry(child, depth));
+      result.addAll(_descendantsOf(child, depth + 1));
+    }
+    return result;
+  }
+
+  Future<void> _toggle(DailyTask task) async {
+    await state.tasks.toggle(task);
+    await _load();
+    await state.refreshCounts();
+  }
+
+  /// 一张任务卡（「编号方块 + 标题 + 重复/提醒标签 + 可收起的下级」）。
   /// [number] 大于 0 时显示左上角的编号方块（0 表示不显示）；
   /// [accent] 覆盖强调色 —— 班次任务用所属班次色，独立事项用灰色。
-  Widget _taskCard(
-    DailyTask task,
-    List<DailyTask> children, {
-    int number = 0,
-    Color? accent,
-  }) {
+  Widget _taskCard(DailyTask task, {int number = 0, Color? accent}) {
     final shiftColor = accent ??
         (task.shiftTypeId == null
             ? AppColors.primary
             : AppColors.fromHex(
                 state.shifts.byId(task.shiftTypeId)?.colorHex ?? '#1F9E8F'));
     final collapsed = _collapsed.contains(task.id);
+    final descendants = _descendantsOf(task);
 
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 5, 12, 5),
@@ -377,17 +414,13 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
                   checked: task.isCompleted,
                   size: 24,
                   color: shiftColor,
-                  onTap: () async {
-                    await state.tasks.toggle(task);
-                    await _load();
-                    await state.refreshCounts();
-                  },
+                  onTap: () => _toggle(task),
                 ),
                 _menu(task),
               ],
             ),
           ),
-          if (children.isNotEmpty) ...[
+          if (descendants.isNotEmpty) ...[
             Padding(
               padding: const EdgeInsets.only(left: 12, bottom: 6),
               child: GestureDetector(
@@ -428,38 +461,40 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
               ),
             ),
             if (!collapsed)
-              for (final child in children)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(36, 0, 12, 2),
-                  child: Row(
-                    children: [
-                      TaskCheckCircle(
-                        checked: child.isCompleted,
-                        onTap: () async {
-                          await state.tasks.toggle(child);
-                          await _load();
-                          await state.refreshCounts();
-                        },
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Text(
-                          child.title,
-                          style: TextStyle(
-                            fontSize: 14,
-                            height: 1.4,
-                            color: AppColors.textPrimary,
-                            decoration:
-                                child.isCompleted ? TextDecoration.lineThrough : null,
-                          ),
-                        ),
-                      ),
-                      _menu(child, compact: true),
-                    ],
-                  ),
-                ),
+              for (final entry in descendants)
+                _childRow(entry.key, entry.value, shiftColor),
           ],
           const SizedBox(height: 4),
+        ],
+      ),
+    );
+  }
+
+  /// 一行下级任务（缩进随层级增加；第 3 层的孙任务不能再往下加）。
+  Widget _childRow(DailyTask child, int depth, Color accent) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(24.0 + depth * 14, 0, 4, 2),
+      child: Row(
+        children: [
+          TaskCheckCircle(
+            checked: child.isCompleted,
+            size: depth == 1 ? 20.0 : 18.0,
+            color: accent,
+            onTap: () => _toggle(child),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              child.title,
+              style: TextStyle(
+                fontSize: depth == 1 ? 14 : 13,
+                height: 1.4,
+                color: depth == 1 ? AppColors.textPrimary : AppColors.textSecondary,
+                decoration: child.isCompleted ? TextDecoration.lineThrough : null,
+              ),
+            ),
+          ),
+          _menu(child, compact: true),
         ],
       ),
     );
@@ -522,13 +557,20 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
             break;
         }
       },
-      itemBuilder: (context) => [
-        const PopupMenuItem(value: 'rename', child: Text('重命名')),
-        const PopupMenuItem(value: 'remind', child: Text('设置提醒时间')),
-        if (task.parentId == null) const PopupMenuItem(value: 'add-child', child: Text('添加子任务')),
-        const PopupMenuItem(value: 'to-template', child: Text('一键转为模板任务')),
-        const PopupMenuItem(value: 'delete', child: Text('删除此任务（仅今天）')),
-      ],
+      itemBuilder: (context) {
+        final depth = _depthOf(task);
+        return [
+          const PopupMenuItem(value: 'rename', child: Text('重命名')),
+          const PopupMenuItem(value: 'remind', child: Text('设置提醒时间')),
+          if (depth < 2)
+            PopupMenuItem(
+              value: 'add-child',
+              child: Text(depth == 0 ? '添加子任务' : '添加孙任务'),
+            ),
+          const PopupMenuItem(value: 'to-template', child: Text('一键转为模板任务')),
+          const PopupMenuItem(value: 'delete', child: Text('删除此任务（仅今天）')),
+        ];
+      },
     );
   }
 
@@ -562,7 +604,10 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
   }
 
   Future<void> _addChild(DailyTask parent) async {
-    final text = await _promptText('新增子任务', '');
+    final text = await _promptText(
+      _depthOf(parent) == 0 ? '新增子任务' : '新增孙任务',
+      '',
+    );
     if (text == null || text.trim().isEmpty) return;
     await state.tasks.addChildTask(parent: parent, title: text.trim());
     await _load();
