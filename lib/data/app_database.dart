@@ -296,7 +296,7 @@ class AppDatabase {
     final parents = <String, int>{};
     var order = 0;
     for (final tpl in presetRootTasks) {
-      final shiftId = idByKind[tpl['shift']];
+      final shiftId = idByKind[tpl['shift']!];
       if (shiftId == null) continue;
       final id = await db.insert(tTemplate, {
         'shift_type_id': shiftId,
@@ -311,7 +311,7 @@ class AppDatabase {
     var childOrder = 0;
     final childBatch = db.batch();
     for (final tpl in presetChildTasks) {
-      final shiftId = idByKind[tpl['shift']];
+      final shiftId = idByKind[tpl['shift']!];
       final parentId = parents['${tpl['shift']}|${tpl['parent']}'];
       if (shiftId == null || parentId == null) continue;
       childBatch.insert(tTemplate, {

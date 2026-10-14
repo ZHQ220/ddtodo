@@ -33,7 +33,7 @@ class TaskRepository extends ChangeNotifier {
     final prevShift = shiftOfDay(DayUtil.addDays(day, -1));
     if (prevShift != null && prevShift.crossDay) {
       result.add(ScheduleInstance(
-        shiftDate: DayUtil.addDays(day, -1),
+        shiftDate: DayUtil.iso(DayUtil.addDays(day, -1)),
         shiftTypeId: prevShift.id!,
         crossDay: true,
         dateOffset: 1,
@@ -44,7 +44,7 @@ class TaskRepository extends ChangeNotifier {
     final today = shiftOfDay(day);
     if (today != null) {
       result.add(ScheduleInstance(
-        shiftDate: day,
+        shiftDate: DayUtil.iso(day),
         shiftTypeId: today.id!,
         crossDay: today.crossDay,
         dateOffset: today.crossDay ? 1 : 0,
@@ -392,7 +392,7 @@ class TaskRepository extends ChangeNotifier {
           );
         } else {
           // 注意：要先落库再查兄弟节点，否则拿到的是勾选前的状态。
-          final siblings = await _childrenOf(parent.id);
+          final siblings = await _childrenOf(parent.id!);
           final allDone = siblings.isNotEmpty && siblings.every((c) => c.isCompleted);
           if (allDone && !parent.isCompleted) {
             await db.update(

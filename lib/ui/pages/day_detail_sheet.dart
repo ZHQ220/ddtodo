@@ -120,7 +120,6 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
 
   Widget _header() {
     final s = shift;
-    final lunar = LunarUtil.fromSolar(date);
     final color = s == null ? AppColors.primary : AppColors.fromHex(s.colorHex);
 
     return Container(
@@ -164,7 +163,7 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
           Padding(
             padding: const EdgeInsets.only(left: 30),
             child: Text(
-              lunar.description(date),
+              LunarUtil.description(date),
               style: const TextStyle(color: Colors.white70, fontSize: 12),
             ),
           ),
@@ -309,15 +308,19 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
       list.where((t) => t.parentId == null && t.isCompleted).length;
 
   /// 一张任务卡（图 2 里的「编号方块 + 标题 + 重复标签 + 收起的子任务」）。
-  Widget _taskCard(DailyTask task, List<DailyTask> children) {
-    final shiftColor = task.shiftTypeId == null
-        ? AppColors.primary
-        : AppColors.fromHex(state.shifts.byId(task.shiftTypeId)?.colorHex ?? '#1F9E8F');
-    final number = _shiftTasks
-            .where((t) => t.parentId == null)
-            .toList()
-            .indexOf(task) +
-        1;
+  /// [number] 大于 0 时显示左上角的编号方块（0 表示不显示）；
+  /// [accent] 覆盖强调色 —— 班次任务用所属班次色，独立事项用灰色。
+  Widget _taskCard(
+    DailyTask task,
+    List<DailyTask> children, {
+    int number = 0,
+    Color? accent,
+  }) {
+    final shiftColor = accent ??
+        (task.shiftTypeId == null
+            ? AppColors.primary
+            : AppColors.fromHex(
+                state.shifts.byId(task.shiftTypeId)?.colorHex ?? '#1F9E8F'));
     final collapsed = _collapsed.contains(task.id);
 
     return Container(

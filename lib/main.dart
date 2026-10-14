@@ -86,7 +86,21 @@ class _HomeShellState extends State<HomeShell> {
               onPressed: state.refreshAll,
             ),
           PopupMenuButton<String>(
-            onSelected: (value) => Navigator.of(context).pushNamed(value),
+            onSelected: (value) {
+              // 数据页要回调外壳刷新任务列表，所以单独用 MaterialPageRoute 打开。
+              if (value == '/data') {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => DataSettingsPage(
+                      state: state,
+                      onDataChanged: () => setState(() => _refreshToken++),
+                    ),
+                  ),
+                );
+                return;
+              }
+              Navigator.of(context).pushNamed(value);
+            },
             itemBuilder: (context) => const [
               PopupMenuItem(value: '/shifts', child: Text('排班规则管理')),
               PopupMenuItem(value: '/templates', child: Text('班次任务模板')),

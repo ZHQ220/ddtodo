@@ -1166,9 +1166,12 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
 // ========================================================== 数据管理
 
 class DataSettingsPage extends StatefulWidget {
-  const DataSettingsPage({super.key, required this.state});
+  const DataSettingsPage({super.key, required this.state, this.onDataChanged});
 
   final AppState state;
+
+  /// 导入 / 恢复出厂后回调外壳，让任务列表整体重建（可选）。
+  final VoidCallback? onDataChanged;
 
   @override
   State<DataSettingsPage> createState() => _DataSettingsPageState();

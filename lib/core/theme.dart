@@ -28,7 +28,9 @@ class AppTheme {
       colorScheme: scheme,
       scaffoldBackgroundColor: AppColors.scaffold,
       splashFactory: InkRipple.splashFactory,
-      appBarTheme: const AppBarTheme(
+      // Flutter 3.47 起这个字段的类型是 AppBarThemeData（AppBarTheme 本身变成了
+      // widget 级主题），用旧名字在新版会上报类型不匹配，所以这里写新名字。
+      appBarTheme: const AppBarThemeData(
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         elevation: 0,

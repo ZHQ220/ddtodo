@@ -50,7 +50,7 @@ class ShiftRepository extends ChangeNotifier {
     ShiftCycle? best;
     for (final c in _cycles) {
       if (c.startDate.compareTo(iso) <= 0) {
-        if (best == null || c.id > best.id) best = c;
+        if (best == null || (c.id ?? 0) > (best.id ?? 0)) best = c;
       }
     }
     return best;
