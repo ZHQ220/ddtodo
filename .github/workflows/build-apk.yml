@@ -1,12 +1,8 @@
 name: 打包 Android APK
 
-# 说明：
-#   这个文件让 GitHub 的免费服务器帮你把 DDtodo 编译成手机上能装的 APK。
-#   你不需要在电脑上安装 Flutter / Android Studio / Java。
-#
-# 用法：把整个项目传到 GitHub 仓库后，进入仓库的 Actions 标签页，
-#       选择左侧的「打包 Android APK」，点右边的 Run workflow 即可。
-#       跑完后在当次运行的页面底部 Artifacts 里下载 DDtodo-apk.zip，
+# 说明：这个文件让 GitHub 的免费服务器帮你把 DDtodo 编译成手机上能装的 APK。
+# 用法：进入仓库的 Actions 标签页，选左侧「打包 Android APK」，点 Run workflow。
+#       跑完后在当次运行页面底部 Artifacts 里下载 DDtodo-apk.zip，
 #       解压出来的 app-release.apk 就是安装包。
 
 on:
@@ -34,10 +30,8 @@ jobs:
           channel: stable
           cache: true
 
-      # Flutter 每个版本自带的 Android 工程模板都不同（Gradle / AGP 版本、
-      # gradle wrapper 的 jar 等）。所以这里先用你当前 Flutter 版本生成一个
-      # 干净的标准工程，再把本仓库的源码塞进去 —— 这样就不会出现
-      # 「Gradle 版本和插件不匹配」这类问题。
+      # Flutter 每个版本自带的 Android 工程模板都不同（Gradle / AGP / wrapper 等），
+      # 所以先用当前 Flutter 生成一个干净工程，再把本仓库源码塞进去。
       - name: 生成标准 Android 工程壳
         run: flutter create --org com.example --project-name ddtodo "$RUNNER_TEMP/ddtodo"
 
@@ -48,9 +42,7 @@ jobs:
           cp pubspec.yaml "$W/pubspec.yaml"
           rm -rf "$W/lib"
           cp -r lib "$W/lib"
-          # 模板工程自带的 test/widget_test.dart 引用的是默认计数器示例，删掉
           rm -rf "$W/test"
-          # 用本项目的 AndroidManifest.xml 覆盖模板的（加上日历读取权限、应用名 DDtodo）
           cp android/app/src/main/AndroidManifest.xml "$W/android/app/src/main/AndroidManifest.xml"
           mkdir -p "$W/android/app/src/debug" "$W/android/app/src/profile"
           cp android/app/src/debug/AndroidManifest.xml "$W/android/app/src/debug/AndroidManifest.xml"
@@ -61,6 +53,20 @@ jobs:
       - name: 下载依赖
         working-directory: ${{ runner.temp }}/ddtodo
         run: flutter pub get
+
+      # 把所有 Dart 错误列到运行页面的 Annotations 面板上，一眼可见
+      - name: 静态检查（列出所有 Dart 错误）
+        working-directory: ${{ runner.temp }}/ddtodo
+        continue-on-error: true
+        run: |
+          flutter analyze > analyze.txt 2>&1 || true
+          echo "======== flutter analyze 的完整输出 ========"
+          cat analyze.txt
+          echo "======== 其中带 error 的行 ========"
+          grep -i "error" analyze.txt | head -n 40 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+          echo "=========================================="
 
       - name: 编译 release APK
         working-directory: ${{ runner.temp }}/ddtodo
