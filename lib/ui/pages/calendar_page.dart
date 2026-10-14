@@ -21,7 +21,10 @@ class CalendarPage extends StatefulWidget {
 }
 
 class _CalendarPageState extends State<CalendarPage> {
-  final PageController _controller = PageController(initialPage: 600);
+  /// 起始页要对齐「当前应该显示的月份」：打开 App 时如果恢复的是上次选中的
+  /// 日期（可能在别的月份），固定从今天那页开始会让标题和格子对不上。
+  late final PageController _controller =
+      PageController(initialPage: _pageOfMonth(widget.state.visibleMonth));
 
   AppState get state => widget.state;
 

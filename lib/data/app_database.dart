@@ -181,14 +181,23 @@ class AppDatabase {
 
   static Future<void> onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // v1 时代跨天班次的任务写在结束日（date），但 shift_date 记的是开始日，
+      // v1 时代夜班的任务写在结束日（date），但 shift_date 记的是开始日，
       // 于是「前一天晚上的班」的任务会同时出现在前一天，日历上也会把班次画错。
       // v2 起一天一个班次、任务就写在这一天，所以把 shift_date 统一成 date。
       // 只做数据归一，不删任何记录；未完成任务下次打开某天时会按新排班自动对账。
-      await db.rawUpdate(
-        'UPDATE $tDaily SET shift_date = date '
-        'WHERE template_id IS NOT NULL AND date IS NOT NULL AND shift_date <> date',
-      );
+      //
+      // 先确认这三列确实存在：极老的库（或用户自己改过的库）缺列时，
+      // 直接跑 UPDATE 会抛 `no such column`，整个升级会失败。
+      final cols = await db.rawQuery('PRAGMA table_info($tDaily)');
+      final names = <String>{for (final row in cols) if (row['name'] != null) '${row['name']}'};
+      if (names.contains('shift_date') &&
+          names.contains('date') &&
+          names.contains('template_id')) {
+        await db.rawUpdate(
+          'UPDATE $tDaily SET shift_date = date '
+          'WHERE template_id IS NOT NULL AND date IS NOT NULL AND shift_date <> date',
+        );
+      }
     }
   }
 

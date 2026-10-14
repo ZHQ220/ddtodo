@@ -82,7 +82,17 @@ class _HomeShellState extends State<HomeShell> {
             IconButton(
               tooltip: '刷新',
               icon: const Icon(Icons.refresh),
-              onPressed: state.refreshAll,
+              onPressed: () async {
+                await state.hardRefresh();
+                if (!mounted) return;
+                setState(() => _refreshToken++);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('已刷新：排班与任务清单重新读取'),
+                    duration: Duration(milliseconds: 1200),
+                  ),
+                );
+              },
             ),
           PopupMenuButton<String>(
             onSelected: (value) {
@@ -111,7 +121,13 @@ class _HomeShellState extends State<HomeShell> {
           ),
         ],
       ),
-      body: IndexedStack(index: _index, children: pages),
+      // 监听全局状态：月份切换、任务增删、模板改动后立刻刷新当前页面。
+      // 没有这层监听时，左右滑动月份虽然会换页，但标题和「任务数量圆点」不会更新
+      // （滑到的那一个月永远显示不出数字）。
+      body: ListenableBuilder(
+        listenable: state,
+        builder: (context, _) => IndexedStack(index: _index, children: pages),
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _index,
         onTap: (i) => setState(() => _index = i),

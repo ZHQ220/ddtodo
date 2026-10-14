@@ -145,6 +145,29 @@ class TemplateRepository extends ChangeNotifier {
     await load();
   }
 
+  /// 拖动排序：把给出的这一组同层模板按新顺序重新编号（0 开始）。
+  ///
+  /// 调用方保证 [ordered] 都是同一个父节点下的兄弟。
+  Future<void> reorder(List<TaskTemplate> ordered) async {
+    if (ordered.length < 2) return;
+    final batch = Db.instance.batch();
+    var changed = false;
+    for (var i = 0; i < ordered.length; i++) {
+      final id = ordered[i].id;
+      if (id == null) continue; // 还没落库的行不参与排序
+      batch.update(
+        AppDatabase.tTemplate,
+        {'sort_order': i},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      changed = true;
+    }
+    if (!changed) return;
+    await batch.commit(noResult: true);
+    await load();
+  }
+
   /// 删除模板；连同其所有下级（子任务、孙任务…）。
   Future<void> delete(int id) async {
     final db = Db.instance;

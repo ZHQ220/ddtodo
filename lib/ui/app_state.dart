@@ -76,6 +76,7 @@ class AppState extends ChangeNotifier {
   /// 任务数量缓存（日期 iso → 未完成数量）；null 表示尚未加载。
   Map<String, int>? _counts;
   bool _loadingTasks = false;
+  bool _reloadQueued = false;
   bool get loadingTasks => _loadingTasks;
 
   /// 打卡数据是否已就绪。
@@ -121,16 +122,25 @@ class AppState extends ChangeNotifier {
   /// 折中方案 —— 只为**当前可见的这一个月**按需实例化（约 30 天），
   /// 且在首次渲染之后再补算，不阻塞 UI。
   Future<void> loadMonth() async {
-    if (_loadingTasks) return;
+    if (_loadingTasks) {
+      // 正在加载时又滑到了别的月份（快速滑动）：记一笔，等这一轮结束后再补一轮。
+      // 否则新滑到的那一个月会永远没有数量圆点。
+      _reloadQueued = true;
+      return;
+    }
     _loadingTasks = true;
     notifyListeners();
 
-    final from = DayUtil.firstOfMonth(_visibleMonth);
-    final to = DayUtil.addDays(DateTime(_visibleMonth.year, _visibleMonth.month + 1, 1), -1);
+    do {
+      _reloadQueued = false;
+      // 每一轮都重新读 _visibleMonth：滑动很快时它可能已经又变了。
+      final from = DayUtil.firstOfMonth(_visibleMonth);
+      final to = DayUtil.addDays(DateTime(_visibleMonth.year, _visibleMonth.month + 1, 1), -1);
 
-    await tasks.ensureRange(from, to);
-    _counts = await tasks.countsByDate(from, to);
-    _lunarCache.clear();
+      await tasks.ensureRange(from, to);
+      _counts = await tasks.countsByDate(from, to);
+      _lunarCache.clear();
+    } while (_reloadQueued);
 
     _loadingTasks = false;
     notifyListeners();
@@ -157,6 +167,18 @@ class AppState extends ChangeNotifier {
     final to = monthEnd.isAfter(todayMonthEnd) ? monthEnd : todayMonthEnd;
     await tasks.syncTemplateChanges(from: today, until: to);
     await refreshAll();
+  }
+
+  /// 顶部「刷新」按钮：重新从数据库读取班次与模板，再把「今天及以后」的清单
+  /// 按模板重算一遍，最后重算当前月份的数量圆点。
+  ///
+  /// 旧实现只调用 `refreshAll()`：数据没变时界面看不出任何变化，用户会以为按钮
+  /// 按了没反应。这里改成一次真正的重载，并在界面上给出「已刷新」提示。
+  Future<void> hardRefresh() async {
+    await shifts.load();
+    await templates.load();
+    await syncTemplateChanges();
+    await refreshCounts();
   }
 
   /// 任务数据变化后的轻量刷新：不重新实例化，只重算数量与当天列表。

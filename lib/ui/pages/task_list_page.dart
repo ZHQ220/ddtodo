@@ -93,21 +93,6 @@ class _TaskListPageState extends State<TaskListPage> {
     return _childrenOf(all, task).any((c) => _needsWork(all, c, depth + 1));
   }
 
-  /// 展平某个任务的下级：返回 `(任务, 层级)`，层级从 1 开始，最多三层。
-  List<MapEntry<DailyTask, int>> _flatten(
-    List<DailyTask> all,
-    DailyTask root, [
-    int depth = 1,
-  ]) {
-    final result = <MapEntry<DailyTask, int>>[];
-    if (depth > 2) return result;
-    for (final child in _childrenOf(all, root)) {
-      result.add(MapEntry(child, depth));
-      result.addAll(_flatten(all, child, depth + 1));
-    }
-    return result;
-  }
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -215,6 +200,12 @@ class _TaskListPageState extends State<TaskListPage> {
     final shift = state.tasks.shiftOfDay(today);
     final accent = shift == null ? AppColors.primary : AppColors.fromHex(shift.colorHex);
     final roots = all.where((t) => t.parentId == null && _needsWork(all, t)).toList();
+    // 拖动排序要照顾「被隐藏（已完成）的同级任务」：它们保持原来的位置。
+    final allRoots = all.where((t) => t.parentId == null).toList()
+      ..sort((a, b) {
+        final d = a.sortOrder.compareTo(b.sortOrder);
+        return d != 0 ? d : (a.id ?? 0).compareTo(b.id ?? 0);
+      });
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -225,8 +216,21 @@ class _TaskListPageState extends State<TaskListPage> {
           if (roots.isEmpty)
             _emptyToday()
           else
-            for (var i = 0; i < roots.length; i++)
-              _card(all, roots[i], i + 1, accent),
+            // 顶层任务卡可以长按拖动排序（只影响当天）。
+            ReorderableListView(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              padding: EdgeInsets.zero,
+              onReorder: (oldIndex, newIndex) =>
+                  _reorderAmongVisible(allRoots, roots, oldIndex, newIndex),
+              children: [
+                for (var i = 0; i < roots.length; i++)
+                  KeyedSubtree(
+                    key: ValueKey('card-${roots[i].id}'),
+                    child: _card(all, roots[i], i + 1, accent),
+                  ),
+              ],
+            ),
         ],
       ),
     );
@@ -391,13 +395,14 @@ class _TaskListPageState extends State<TaskListPage> {
   // ======================================================== 任务卡
 
   /// 一张任务卡：编号方块 + 标题 + 下级（子任务 / 孙任务）。
+  ///
+  /// 每一层的兄弟任务都能长按拖动排序（只影响这一天）。
   Widget _card(
     List<DailyTask> all,
     DailyTask root,
     int number,
     Color accent,
   ) {
-    final descendants = _flatten(all, root);
     final shiftColor = root.shiftTypeId == null
         ? accent
         : AppColors.fromHex(
@@ -414,12 +419,78 @@ class _TaskListPageState extends State<TaskListPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _row(root, 0, shiftColor, number: number),
-          for (final entry in descendants)
-            _row(entry.key, entry.value, shiftColor, outline: true),
+          _childList(all, root, 1, shiftColor),
           const SizedBox(height: 4),
         ],
       ),
     );
+  }
+
+  /// 某个任务的下一层（整层可长按拖动排序，最多三层）。
+  Widget _childList(List<DailyTask> all, DailyTask parent, int depth, Color accent) {
+    if (depth > 2) return const SizedBox.shrink();
+    final children = _childrenOf(all, parent);
+    if (children.isEmpty) return const SizedBox.shrink();
+
+    return ReorderableListView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      onReorder: (oldIndex, newIndex) =>
+          _reorderSiblings(children, oldIndex, newIndex),
+      children: [
+        for (final child in children)
+          KeyedSubtree(
+            key: ValueKey('task-${child.id}'),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _row(child, depth, accent, outline: true),
+                _childList(all, child, depth + 1, accent),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// 拖动结束：按新顺序重排这一层的兄弟任务（只影响这一天）。
+  Future<void> _reorderSiblings(
+    List<DailyTask> siblings,
+    int oldIndex,
+    int newIndex,
+  ) =>
+      _reorderAmongVisible(siblings, siblings, oldIndex, newIndex);
+
+  /// 拖动结束：[visible] 是界面上真正能拖的那些（可能因为「只看未完成」少了几条），
+  /// [allSiblings] 是这一层的**全部**任务 —— 被隐藏的那些保持原来的槽位不动，
+  /// 这样重新编号后 `sort_order` 不会和隐藏项撞车。
+  Future<void> _reorderAmongVisible(
+    List<DailyTask> allSiblings,
+    List<DailyTask> visible,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (oldIndex == newIndex) return;
+    final order = [...visible];
+    final moved = order.removeAt(oldIndex);
+    order.insert(newIndex, moved);
+
+    final visibleIds = order.map((t) => t.id).toSet();
+    final merged = <DailyTask>[];
+    var cursor = 0;
+    for (final item in allSiblings) {
+      if (visibleIds.contains(item.id)) {
+        merged.add(order[cursor++]);
+      } else {
+        merged.add(item);
+      }
+    }
+    await state.tasks.reorderSiblings(merged);
+    if (!mounted) return;
+    await _load();
+    await state.refreshCounts();
   }
 
   Widget _row(

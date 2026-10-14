@@ -1133,6 +1133,7 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
                         child: Text(
                           '班次确定后，这些任务会自动生成到当天的清单里：\n'
                           '· 最多三层：任务 → 子任务 → 孙任务，点「添加子任务 / 加下级」往下加；\n'
+                          '· 长按某一条可以上下拖动排序，顺序会同步到今天及以后；\n'
                           '· 下一层全部勾选 → 上一层自动完成；\n'
                           '· 在清单里删除某条任务只影响那一天，第二天照常生成。',
                           style: TextStyle(
@@ -1142,8 +1143,20 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
                           ),
                         ),
                       ),
-                      for (var i = 0; i < roots.length; i++)
-                        _templateCard(roots[i], i + 1),
+                      ReorderableListView(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        padding: EdgeInsets.zero,
+                        onReorder: (oldIndex, newIndex) =>
+                            _reorderTemplates(roots, oldIndex, newIndex),
+                        children: [
+                          for (var i = 0; i < roots.length; i++)
+                            KeyedSubtree(
+                              key: ValueKey('tpl-${roots[i].id}'),
+                              child: _templateCard(roots[i], i + 1),
+                            ),
+                        ],
+                      ),
                     ],
                   ),
           ),
@@ -1209,7 +1222,7 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
             trailing: _templateMenu(root),
             onTap: () => _editTemplate(root),
           ),
-          for (final entry in _descendantsOf(root)) _childRow(entry.key, entry.value),
+          _childTemplateList(root, 1),
           Padding(
             padding: const EdgeInsets.only(left: 52, bottom: 8),
             child: Align(
@@ -1237,16 +1250,52 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
         : '${children.length} 个子任务 + $grand 个孙任务';
   }
 
-  /// 某个任务的全部下级（层级从 1 开始），最多三层：任务 → 子任务 → 孙任务。
-  List<MapEntry<TaskTemplate, int>> _descendantsOf(TaskTemplate root,
-      [int depth = 1]) {
-    final result = <MapEntry<TaskTemplate, int>>[];
-    if (depth > 2) return result;
-    for (final child in state.templates.childrenOf(root.id)) {
-      result.add(MapEntry(child, depth));
-      result.addAll(_descendantsOf(child, depth + 1));
-    }
-    return result;
+  /// 某个模板的下一层（整层可长按拖动排序）。
+  Widget _childTemplateList(TaskTemplate parent, int depth) {
+    if (depth > 2) return const SizedBox.shrink();
+    final children = state.templates.childrenOf(parent.id);
+    if (children.isEmpty) return const SizedBox.shrink();
+
+    return ReorderableListView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      onReorder: (oldIndex, newIndex) =>
+          _reorderTemplates(children, oldIndex, newIndex),
+      children: [
+        for (final child in children)
+          KeyedSubtree(
+            key: ValueKey('tpl-${child.id}'),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _childRow(child, depth),
+                _childTemplateList(child, depth + 1),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// 拖动结束：重排这一层模板，并把「今天及以后」的实例顺序同步过去。
+  ///
+  /// 用户要求：拖动模板影响全部（以后每天生成的都是这个顺序）。
+  Future<void> _reorderTemplates(
+    List<TaskTemplate> siblings,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (oldIndex == newIndex) return;
+    final ordered = [...siblings];
+    final moved = ordered.removeAt(oldIndex);
+    ordered.insert(newIndex, moved);
+    await state.templates.reorder(ordered);
+    await state.tasks.syncOrderFromTemplates();
+    await state.refreshCounts();
+    if (!mounted) return;
+    setState(() {});
   }
 
   /// 一行下级任务（缩进随层级增加）。孙任务（第 3 层）不能再加下级。

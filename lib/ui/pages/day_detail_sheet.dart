@@ -149,8 +149,8 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
               PopupMenuButton<String>(
                 tooltip: '更多',
                 icon: const Icon(Icons.more_vert, color: Colors.white),
-                onSelected: (value) {
-                  if (value == 'clear-day') _clearDay();
+                onSelected: (value) async {
+                  if (value == 'clear-day') await _clearDay();
                 },
                 itemBuilder: (context) => const [
                   PopupMenuItem(value: 'clear-day', child: Text('清空当天任务')),
@@ -230,9 +230,8 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _sectionLabel('班次任务', trailing: '${_doneCount(_shiftTasks)}/${_shiftTasks.length}'),
-        for (var i = 0; i < roots.length; i++)
-          _taskCard(roots[i], number: i + 1),
+        _sectionLabel('班次任务', trailing: '${_doneCount(_shiftTasks)}/${roots.length}'),
+        _rootList(roots),
       ],
     );
   }
@@ -243,11 +242,49 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _sectionLabel('独立事项', trailing: '${_doneCount(_customTasks)}/${_customTasks.length}'),
-        for (var i = 0; i < roots.length; i++)
-          _taskCard(roots[i], number: 0, accent: AppColors.textSecondary),
+        _sectionLabel('独立事项', trailing: '${_doneCount(_customTasks)}/${roots.length}'),
+        _rootList(roots, numbered: false, accent: AppColors.textSecondary),
       ],
     );
+  }
+
+  /// 一组顶层任务卡；长按可以拖动排序（只影响这一天）。
+  Widget _rootList(List<DailyTask> roots, {bool numbered = true, Color? accent}) {
+    if (roots.isEmpty) return const SizedBox.shrink();
+    return ReorderableListView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      onReorder: (oldIndex, newIndex) =>
+          _reorderSiblings(roots, oldIndex, newIndex),
+      children: [
+        for (var i = 0; i < roots.length; i++)
+          KeyedSubtree(
+            key: ValueKey('root-${roots[i].id}'),
+            child: _taskCard(
+              roots[i],
+              number: numbered ? i + 1 : 0,
+              accent: accent,
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// 拖动结束：按新顺序重排这一层的兄弟任务（只影响这一天）。
+  Future<void> _reorderSiblings(
+    List<DailyTask> siblings,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (oldIndex == newIndex) return;
+    final ordered = [...siblings];
+    final moved = ordered.removeAt(oldIndex);
+    ordered.insert(newIndex, moved);
+    await state.tasks.reorderSiblings(ordered);
+    await _load();
+    await state.refreshCounts();
   }
 
   Widget _sectionLabel(String text, {String? trailing}) {
@@ -438,9 +475,7 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
                 ),
               ),
             ),
-            if (!collapsed)
-              for (final entry in descendants)
-                _childRow(entry.key, entry.value, shiftColor),
+            if (!collapsed) _childList(task, 1, shiftColor),
           ],
           const SizedBox(height: 4),
         ],
@@ -475,6 +510,34 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
           _menu(child, compact: true),
         ],
       ),
+    );
+  }
+
+  /// 某个任务的下一层下级（整层可长按拖动排序，最多三层）。
+  Widget _childList(DailyTask parent, int depth, Color accent) {
+    if (depth > 2) return const SizedBox.shrink();
+    final children = _childrenOf(parent);
+    if (children.isEmpty) return const SizedBox.shrink();
+
+    return ReorderableListView(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      onReorder: (oldIndex, newIndex) =>
+          _reorderSiblings(children, oldIndex, newIndex),
+      children: [
+        for (final child in children)
+          KeyedSubtree(
+            key: ValueKey('child-${child.id}'),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _childRow(child, depth, accent),
+                _childList(child, depth + 1, accent),
+              ],
+            ),
+          ),
+      ],
     );
   }
 

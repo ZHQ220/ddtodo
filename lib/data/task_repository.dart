@@ -238,8 +238,13 @@ class TaskRepository extends ChangeNotifier {
   /// 把某天遗留的、**不属于当前班次**的模板实例清掉。
   ///
   /// 排班改了（早班 → 中班）或这天不再排班时，旧班次留下的实例如果不清理，
-  /// 那天的清单里就会混进别的班次的任务。只清理「未完成」的实例：已经做完的
-  /// 记录保留，已经被用户删掉的（墓碑）也保持原样。
+  /// 那天的清单里就会混进别的班次的任务。
+  ///
+  /// 这里用**物理删除**而不是打墓碑：判重查询 `template_id IS NOT NULL AND
+  /// shift_date = ?` 会把墓碑当成「这条模板在这天已经生成过」，于是换回原来的
+  /// 班次时任务永远补不回来（清单变空）。用户在清单里手动删掉的任务仍然走墓碑
+  /// （`deleteTask`），不受这里影响 —— 系统清理的这几行不代表用户意图。
+  /// 只清理「未完成」的实例：已经做完的记录保留。
   Future<void> _dropStaleInstances(DateTime d, int? shiftTypeId) async {
     final rows = await Db.instance.query(
       AppDatabase.tDaily,
@@ -253,13 +258,104 @@ class TaskRepository extends ChangeNotifier {
       ],
     );
     if (rows.isEmpty) return;
-    final ids = [for (final row in rows) row['id']];
-    await Db.instance.update(
+
+    final ids = <int>{for (final row in rows) (row['id'] as num).toInt()};
+    // 一起清掉它们的下级：父任务被删后，子任务挂在空 parent_id 上既显示不出来
+    // 也没法操作。已完成的子任务照样保留（用户要求做完的记录不抹掉）。
+    for (final id in ids.toList()) {
+      for (final child in await _descendants(id)) {
+        if (!child.isCompleted && child.id != null) ids.add(child.id!);
+      }
+    }
+
+    final list = ids.toList();
+    await Db.instance.delete(
       AppDatabase.tDaily,
-      {'deleted': 1},
-      where: 'id IN (${List.filled(ids.length, '?').join(',')})',
-      whereArgs: ids,
+      where: 'id IN (${List.filled(list.length, '?').join(',')})',
+      whereArgs: list,
     );
+  }
+
+  /// 清单页 / 详情页里的同层拖动排序：把一组兄弟任务按新顺序重新编号。
+  ///
+  /// 只影响这一天的这几个实例（用户要求：拖当天只影响当天），模板和别的日子不动。
+  Future<void> reorderSiblings(List<DailyTask> ordered) async {
+    if (ordered.length < 2) return;
+    final batch = Db.instance.batch();
+    var changed = false;
+    for (var i = 0; i < ordered.length; i++) {
+      final id = ordered[i].id;
+      if (id == null) continue; // 还没落库的行不参与排序
+      batch.update(
+        AppDatabase.tDaily,
+        {'sort_order': i},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      changed = true;
+    }
+    if (!changed) return;
+    await batch.commit(noResult: true);
+    notifyListeners();
+  }
+
+  /// 班次任务模板的顺序被拖动调整后：把「今天及以后、未完成」的实例顺序跟模板对齐。
+  ///
+  /// 用户要求：拖动模板要影响全部（以后每天生成的都是这个顺序）。
+  /// 过去的日子、已经完成的记录保持原样。
+  Future<void> syncOrderFromTemplates() async {
+    final rank = <int, int>{};
+    final groups = <String, List<TaskTemplate>>{};
+    for (final tpl in _templates.all) {
+      final id = tpl.id;
+      if (id == null) continue;
+      groups.putIfAbsent('${tpl.shiftTypeId}|${tpl.parentId ?? 0}', () => []).add(tpl);
+    }
+    for (final list in groups.values) {
+      list.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+      for (var i = 0; i < list.length; i++) {
+        rank[list[i].id!] = i;
+      }
+    }
+    if (rank.isEmpty) return;
+
+    final rows = await Db.instance.query(
+      AppDatabase.tDaily,
+      where: 'template_id IS NOT NULL AND deleted = 0 AND is_completed = 0 '
+          'AND date >= ?',
+      whereArgs: [DayUtil.iso(DayUtil.today())],
+    );
+    if (rows.isEmpty) return;
+
+    final byDay = <String, List<DailyTask>>{};
+    for (final row in rows) {
+      final task = DailyTask.fromMap(row);
+      byDay.putIfAbsent('${task.date}|${task.parentId ?? 0}', () => []).add(task);
+    }
+
+    final batch = Db.instance.batch();
+    var changed = false;
+    for (final list in byDay.values) {
+      list.sort((a, b) {
+        final ra = rank[a.templateId] ?? 1 << 20;
+        final rb = rank[b.templateId] ?? 1 << 20;
+        final d = ra.compareTo(rb);
+        return d != 0 ? d : a.sortOrder.compareTo(b.sortOrder);
+      });
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].sortOrder == i) continue;
+        batch.update(
+          AppDatabase.tDaily,
+          {'sort_order': i},
+          where: 'id = ?',
+          whereArgs: [list[i].id],
+        );
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    await batch.commit(noResult: true);
+    notifyListeners();
   }
 
   /// 把某天「由模板生成、尚未完成」的实例与当前模板对齐。
