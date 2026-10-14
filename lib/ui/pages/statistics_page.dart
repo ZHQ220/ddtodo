@@ -54,10 +54,8 @@ class _StatisticsPageState extends State<StatisticsPage> {
     }
 
     final roots = _tasks.where((t) => t.parentId == null).toList();
-    final appTasks = roots.where((t) => t.source == TaskSource.app).toList();
-    final imported = roots.where((t) => t.source == TaskSource.calendar).toList();
-    final done = appTasks.where((t) => t.isCompleted).length;
-    final rate = appTasks.isEmpty ? 0.0 : done / appTasks.length;
+    final done = roots.where((t) => t.isCompleted).length;
+    final rate = roots.isEmpty ? 0.0 : done / roots.length;
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -66,7 +64,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
         children: [
           _monthSelector(),
           const SizedBox(height: 12),
-          _overviewCard(done, appTasks.length, rate, imported.length),
+          _overviewCard(done, roots.length, rate),
           const SizedBox(height: 12),
           _shiftDistribution(),
           const SizedBox(height: 12),
@@ -103,7 +101,7 @@ class _StatisticsPageState extends State<StatisticsPage> {
     );
   }
 
-  Widget _overviewCard(int done, int total, double rate, int imported) {
+  Widget _overviewCard(int done, int total, double rate) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -124,7 +122,6 @@ class _StatisticsPageState extends State<StatisticsPage> {
               _metric('$done', '已完成'),
               _metric('${total - done}', '未完成'),
               _metric('${(rate * 100).toStringAsFixed(0)}%', '完成率'),
-              _metric('$imported', '日历导入'),
             ],
           ),
           const SizedBox(height: 14),

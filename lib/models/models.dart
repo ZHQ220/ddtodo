@@ -1,15 +1,14 @@
 /// 数据模型。字段命名与 `SPEC.md` 中的表结构一一对应。
 
-/// 任务的来源，对应 daily_task.source_type
+/// 任务的来源，对应 daily_task.source_type。
+///
+/// 早期版本有过「从系统日历导入」，该功能已移除；历史数据里若残留
+/// `calendar` 之类的旧值，一律当作 App 内创建处理（[fromName] 全量兜底）。
 enum TaskSource {
   /// App 内创建（模板实例或独立事项）
-  app,
+  app;
 
-  /// 从系统日历导入
-  calendar;
-
-  static TaskSource fromName(String? name) =>
-      name == 'calendar' ? TaskSource.calendar : TaskSource.app;
+  static TaskSource fromName(String? name) => TaskSource.app;
 
   String get dbName => name;
 }
@@ -66,7 +65,6 @@ class ShiftType {
     required this.colorHex,
     this.isPreset = false,
     this.kind = ShiftKind.custom,
-    this.crossDay = false,
     this.startTime,
     this.endTime,
     this.sortOrder = 0,
@@ -79,9 +77,6 @@ class ShiftType {
   final bool isPreset;
   final ShiftKind kind;
 
-  /// 是否为跨天班次（如 20:00 → 次日 08:00）。
-  final bool crossDay;
-
   /// `HH:mm`，可为空。
   final String? startTime;
   final String? endTime;
@@ -92,13 +87,34 @@ class ShiftType {
 
   bool get isRest => kind == ShiftKind.rest;
 
+  /// 是否跨天（例如 20:00 上班、次日 08:00 下班）。
+  ///
+  /// 不再由任何开关决定：**结束时间不晚于开始时间**就算跨天，
+  /// 这种班次的任务照旧归属到结束日（次日）。
+  bool get crossesMidnight {
+    final s = _minutesOf(startTime);
+    final e = _minutesOf(endTime);
+    if (s == null || e == null) return false;
+    return e <= s;
+  }
+
+  /// 把 `HH:mm` 解析成「当天第几分钟」；解析不了返回 null（含休息班无时间）。
+  static int? _minutesOf(String? text) {
+    if (text == null) return null;
+    final parts = text.split(':');
+    if (parts.length != 2) return null;
+    final h = int.tryParse(parts[0].trim());
+    final m = int.tryParse(parts[1].trim());
+    if (h == null || m == null) return null;
+    return h * 60 + m;
+  }
+
   ShiftType copyWith({
     int? id,
     String? name,
     String? colorHex,
     bool? isPreset,
     ShiftKind? kind,
-    bool? crossDay,
     String? startTime,
     String? endTime,
     int? sortOrder,
@@ -110,7 +126,6 @@ class ShiftType {
       colorHex: colorHex ?? this.colorHex,
       isPreset: isPreset ?? this.isPreset,
       kind: kind ?? this.kind,
-      crossDay: crossDay ?? this.crossDay,
       startTime: startTime ?? this.startTime,
       endTime: endTime ?? this.endTime,
       sortOrder: sortOrder ?? this.sortOrder,
@@ -124,7 +139,6 @@ class ShiftType {
         'color': colorHex,
         'is_preset': isPreset ? 1 : 0,
         'kind': kind.name,
-        'cross_day': crossDay ? 1 : 0,
         'start_time': startTime,
         'end_time': endTime,
         'sort_order': sortOrder,
@@ -137,7 +151,6 @@ class ShiftType {
         colorHex: (m['color'] as String?) ?? '#3B82F6',
         isPreset: (m['is_preset'] as int? ?? 0) == 1,
         kind: ShiftKind.fromName(m['kind'] as String?),
-        crossDay: (m['cross_day'] as int? ?? 0) == 1,
         startTime: m['start_time'] as String?,
         endTime: m['end_time'] as String?,
         sortOrder: m['sort_order'] as int? ?? 0,
@@ -236,7 +249,7 @@ class TaskTemplate {
 
 /// 排班生成实例（一个「班次实例」= 某天开始的一个班次）。
 ///
-/// 跨天班次的任务归到结束日，因此：
+/// 跨天班次（如 20:00 → 次日 08:00）的任务归到结束日，因此：
 ///   shiftDate  = 班次开始的那天
 ///   dateOffset = 任务日期相对开始日的天数（跨天班次为 1）
 ///   showsOn    = 任务实际显示的日期 = shiftDate + dateOffset
@@ -244,7 +257,6 @@ class ScheduleInstance {
   const ScheduleInstance({
     required this.shiftDate,
     required this.shiftTypeId,
-    required this.crossDay,
     this.dateOffset = 0,
   });
 
@@ -252,7 +264,6 @@ class ScheduleInstance {
   final String shiftDate;
 
   final int shiftTypeId;
-  final bool crossDay;
 
   /// 任务实际显示的日期相对 [shiftDate] 的偏移天数。
   final int dateOffset;
@@ -287,7 +298,6 @@ class DailyTask {
     this.templateId,
     this.sortOrder = 0,
     this.deleted = false,
-    this.externalId,
   });
 
   final int? id;
@@ -313,9 +323,6 @@ class DailyTask {
   /// 软删除墓碑：保证「单天删除」后重新打开页面不会再次自动生成。
   final bool deleted;
 
-  /// 系统日历事件的标识（用于重复导入时去重）。
-  final String? externalId;
-
   DailyTask copyWith({
     int? id,
     String? date,
@@ -330,7 +337,6 @@ class DailyTask {
     int? templateId,
     int? sortOrder,
     bool? deleted,
-    String? externalId,
   }) =>
       DailyTask(
         id: id ?? this.id,
@@ -346,7 +352,6 @@ class DailyTask {
         templateId: templateId ?? this.templateId,
         sortOrder: sortOrder ?? this.sortOrder,
         deleted: deleted ?? this.deleted,
-        externalId: externalId ?? this.externalId,
       );
 
   Map<String, Object?> toMap() => {
@@ -363,7 +368,6 @@ class DailyTask {
         'template_id': templateId,
         'sort_order': sortOrder,
         'deleted': deleted ? 1 : 0,
-        'external_id': externalId,
       };
 
   static DailyTask fromMap(Map<String, Object?> m) => DailyTask(
@@ -380,6 +384,5 @@ class DailyTask {
         templateId: m['template_id'] as int?,
         sortOrder: m['sort_order'] as int? ?? 0,
         deleted: (m['deleted'] as int? ?? 0) == 1,
-        externalId: m['external_id'] as String?,
       );
 }

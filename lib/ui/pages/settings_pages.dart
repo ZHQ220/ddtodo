@@ -7,7 +7,6 @@ import '../../data/app_database.dart';
 import '../../data/db.dart';
 import '../../models/models.dart';
 import '../../services/backup_service.dart';
-import '../../services/calendar_service.dart';
 import '../app_state.dart';
 import '../widgets/common.dart';
 
@@ -54,12 +53,6 @@ class _SettingsPageState extends State<SettingsPage> {
           subtitle: 'JSON 全量备份与恢复',
           route: '/data',
         ),
-        _tile(
-          icon: Icons.calendar_month,
-          title: '系统日历同步',
-          subtitle: '单向导入：系统日历 → DDtodo',
-          route: '/calendar',
-        ),
         _group('显示'),
         SwitchListTile(
           secondary: const Icon(Icons.brightness_2_outlined, color: AppColors.primary),
@@ -81,17 +74,6 @@ class _SettingsPageState extends State<SettingsPage> {
             await settings.setWeekStartMonday(v);
             setState(() {});
             await state.refreshCounts();
-          },
-        ),
-        SwitchListTile(
-          secondary: const Icon(Icons.dark_mode_outlined, color: AppColors.primary),
-          title: const Text('跨天班次默认归属结束日', style: TextStyle(fontSize: 14.5)),
-          subtitle: const Text('如晚班 20:00 → 次日 08:00，任务算在次日清单',
-              style: TextStyle(fontSize: 11.5)),
-          value: settings.defaultCrossDay,
-          onChanged: (v) async {
-            await settings.setDefaultCrossDay(v);
-            setState(() {});
           },
         ),
         _group('关于'),
@@ -143,7 +125,11 @@ class _SettingsPageState extends State<SettingsPage> {
         title: Text(title, style: const TextStyle(fontSize: 14.5)),
         subtitle: Text(subtitle, style: const TextStyle(fontSize: 11.5)),
         trailing: const Icon(Icons.chevron_right, color: AppColors.textMuted),
-        onTap: () => Navigator.of(context).pushNamed(route),
+        onTap: () async {
+          await Navigator.of(context).pushNamed(route);
+          // 回到设置页时通知外壳刷新任务列表 / 日历。
+          if (mounted) widget.onDataChanged?.call();
+        },
       ),
     );
   }
@@ -204,7 +190,7 @@ class _ShiftSettingsPageState extends State<ShiftSettingsPage> {
         const Padding(
           padding: EdgeInsets.only(left: 4, bottom: 8),
           child: Text(
-            '预置班次可以改颜色、改时间、改名；跨天班次的任务会自动归属到结束日。',
+            '预置班次可以改颜色、改时间、改名；下班时间早于上班时间的（如晚班）任务会自动归属到结束日。',
             style: TextStyle(fontSize: 11.5, color: AppColors.textMuted, height: 1.5),
           ),
         ),
@@ -218,7 +204,7 @@ class _ShiftSettingsPageState extends State<ShiftSettingsPage> {
     final time = (type.startTime == null && type.endTime == null)
         ? '未设置时间'
         : '${type.startTime ?? '--:--'} - ${type.endTime ?? '--:--'}'
-            '${type.crossDay ? ' · 跨天（任务归属结束日）' : ''}';
+            '${type.crossesMidnight ? ' · 跨天（任务归属结束日）' : ''}';
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
@@ -481,10 +467,16 @@ class _ShiftTypeEditor extends StatefulWidget {
 class _ShiftTypeEditorState extends State<_ShiftTypeEditor> {
   late final TextEditingController _nameController;
   late String _color;
-  late bool _crossDay;
   late ShiftKind _kind;
   TimeOfDay? _start;
   TimeOfDay? _end;
+
+  /// 下班时间不晚于上班时间 → 视为跨天（与 ShiftType.crossesMidnight 同一规则）。
+  bool get _crossesMidnight {
+    final s = _start, e = _end;
+    if (s == null || e == null) return false;
+    return e.hour * 60 + e.minute <= s.hour * 60 + s.minute;
+  }
 
   @override
   void initState() {
@@ -492,7 +484,6 @@ class _ShiftTypeEditorState extends State<_ShiftTypeEditor> {
     final e = widget.existing;
     _nameController = TextEditingController(text: e?.name ?? '');
     _color = e?.colorHex ?? widget.state.shifts.nextPaletteColor();
-    _crossDay = e?.crossDay ?? false;
     _kind = e?.kind ?? ShiftKind.custom;
     _start = _parse(e?.startTime);
     _end = _parse(e?.endTime);
@@ -557,23 +548,9 @@ class _ShiftTypeEditorState extends State<_ShiftTypeEditor> {
                   ChoiceChip(
                     label: Text(kind.label),
                     selected: _kind == kind,
-                    onSelected: (_) => setState(() {
-                      _kind = kind;
-                      if (kind == ShiftKind.night) _crossDay = true;
-                      if (kind == ShiftKind.rest) _crossDay = false;
-                    }),
+                    onSelected: (_) => setState(() => _kind = kind),
                   ),
               ],
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('跨天班次', style: TextStyle(fontSize: 13.5)),
-              subtitle: const Text(
-                '例如 20:00 上班、次日 08:00 下班 —— 任务会归属到结束日那天',
-                style: TextStyle(fontSize: 11.5),
-              ),
-              value: _crossDay,
-              onChanged: (v) => setState(() => _crossDay = v),
             ),
             Row(
               children: [
@@ -604,6 +581,14 @@ class _ShiftTypeEditorState extends State<_ShiftTypeEditor> {
                 ),
               ],
             ),
+            if (_crossesMidnight)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  '下班时间不晚于上班时间 —— 按「跨天」处理，任务归属到结束日（次日）。',
+                  style: TextStyle(fontSize: 11.5, color: AppColors.textMuted, height: 1.4),
+                ),
+              ),
           ],
         ),
       ),
@@ -622,7 +607,6 @@ class _ShiftTypeEditorState extends State<_ShiftTypeEditor> {
               colorHex: _color,
               isPreset: widget.existing?.isPreset ?? false,
               kind: _kind,
-              crossDay: _crossDay,
               startTime: _format(_start),
               endTime: _format(_end),
               sortOrder: widget.existing?.sortOrder ?? 99,
@@ -1292,6 +1276,8 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
             break;
           case 'delete':
             await state.templates.delete(tpl.id!);
+            // 模板删掉后，今天及以后「未完成」的实例也跟着消失（已完成的保留）。
+            await state.syncTemplateChanges();
             setState(() {});
             break;
         }
@@ -1313,6 +1299,8 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
       title: title.trim(),
       parentId: parentId,
     );
+    // 新加的模板任务立刻补到「今天及以后」的清单里。
+    await state.syncTemplateChanges();
     setState(() {});
   }
 
@@ -1328,6 +1316,8 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
       remindTime: remind,
       sortOrder: tpl.sortOrder,
     ));
+    // 改名 / 改提醒：今天及以后「未完成」的实例跟着更新（已完成保留）。
+    await state.syncTemplateChanges();
     setState(() {});
   }
 
@@ -1431,6 +1421,8 @@ class _TemplateSettingsPageState extends State<TemplateSettingsPage> {
     );
     if (target == null) return;
     final count = await state.templates.copyToShift(_selectedShiftId!, target);
+    // 复制过去的模板也要立刻生效（今天及以后）。
+    await state.syncTemplateChanges();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('已复制 $count 条顶层任务')),
@@ -1505,7 +1497,7 @@ class _DataSettingsPageState extends State<DataSettingsPage> {
           ),
           _card(
             title: '导入备份',
-            description: '选择一个 DDtodo 导出的 JSON 文件。导入前会**清空本地数据库**，'
+            description: '选择一个 DDtodo 导出的 JSON 文件。导入前会清空本地数据库，'
                 '再按文件内容完整重建。',
             actions: [
               OutlinedButton.icon(
@@ -1708,194 +1700,6 @@ class _DataSettingsPageState extends State<DataSettingsPage> {
   }
 }
 
-// ======================================================== 系统日历同步
-
-class CalendarSyncPage extends StatefulWidget {
-  const CalendarSyncPage({super.key, required this.state});
-
-  final AppState state;
-
-  @override
-  State<CalendarSyncPage> createState() => _CalendarSyncPageState();
-}
-
-class _CalendarSyncPageState extends State<CalendarSyncPage> {
-  AppState get state => widget.state;
-  late final CalendarService _service = CalendarService(state.tasks);
-  bool _busy = false;
-  bool? _granted;
-  List<Calendar> _calendars = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _probe();
-  }
-
-  Future<void> _probe() async {
-    // 本版本移除了 device_calendar 依赖，不需要探测权限。
-    if (!CalendarService.enabled) return;
-    final granted = await _service.ensurePermission();
-    if (!mounted) return;
-    setState(() => _granted = granted);
-    if (granted) {
-      final list = await _service.calendars();
-      if (!mounted) return;
-      setState(() => _calendars = list);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('系统日历同步')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 30),
-        children: [
-          if (!CalendarService.enabled)
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.tint(AppColors.primary, 0.10),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.tint(AppColors.primary, 0.45)),
-              ),
-              child: const Text(
-                '本版本未启用系统日历同步\n\n'
-                '为了保证第一次就能打包成功，这个模块暂时移除了（它依赖的第三方日历插件'
-                '与较新的 Flutter 版本存在不兼容风险）。\n\n'
-                '受影响的只有「从系统日历导入日程」这一项。排班周期、任务清单、'
-                '子任务、农历、重复任务、JSON 备份、统计等功能全部正常。\n\n'
-                '你以前用旧版本导入过的日历事项如果还留在数据里，可以用下面的'
-                '「清除已导入的日历事项」按钮清掉。',
-                style: TextStyle(fontSize: 12, height: 1.7, color: AppColors.textSecondary),
-              ),
-            )
-          else
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: AppColors.tint(AppColors.primary, 0.07),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Text(
-              '单向导入：只把系统日历里的日程读进 DDtodo，绝不会修改或写回系统日历。\n\n'
-              '· 读取过去与未来的所有日程；\n'
-              '· 导入的条目显示为灰色小字 + 日历图标，与 App 自带任务区分；\n'
-              '· 可以勾选完成，但只改变 App 内的状态；\n'
-              '· 重复同步不会产生重复条目。',
-              style: TextStyle(fontSize: 12, height: 1.7, color: AppColors.textSecondary),
-            ),
-          ),
-          const SizedBox(height: 12),
-          if (_granted == false)
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.divider),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('尚未获得日历权限',
-                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 6),
-                  const Text(
-                    '请在系统的应用权限里允许 DDtodo 读取日历，然后回到这里重试。',
-                    style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton(
-                    onPressed: _probe,
-                    child: const Text('重新申请权限'),
-                  ),
-                ],
-              ),
-            ),
-          if (_calendars.isNotEmpty)
-            Container(
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.divider),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('检测到 ${_calendars.length} 个日历',
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  for (final cal in _calendars)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 3),
-                      child: Row(
-                        children: [
-                          CircleAvatar(
-                            radius: 6,
-                            backgroundColor: cal.displayColor,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(cal.displayName,
-                                style: const TextStyle(fontSize: 13)),
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: (!CalendarService.enabled || _busy) ? null : _sync,
-                  icon: const Icon(Icons.sync),
-                  label: Text(
-                    CalendarService.enabled
-                        ? (_busy ? '同步中…' : '立即同步（单向导入）')
-                        : '系统日历同步（本版本未启用）',
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton.icon(
-            onPressed: _busy ? null : _clear,
-            icon: const Icon(Icons.delete_sweep_outlined),
-            label: const Text('清除已导入的日历事项'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _sync() async {
-    setState(() => _busy = true);
-    final result = await _service.sync();
-    await state.refreshAll();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(result.message)));
-  }
-
-  Future<void> _clear() async {
-    setState(() => _busy = true);
-    await _service.clearImported();
-    await state.refreshAll();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('已清除导入的日历事项')));
-  }
-}
-
 // ================================================================ 关于
 
 class AboutPage extends StatelessWidget {
@@ -1946,10 +1750,10 @@ class AboutPage extends StatelessWidget {
                 '· 固定周期排班：设定「几天一轮 + 每天什么班」，日历无限循环填充\n'
                 '· 单天覆盖：长按日历上的某天，直接改这一天的班次\n'
                 '· 修整轮：从某天起换成新的周期，不追溯历史\n'
-                '· 跨天班次：晚班 20:00 → 次日 08:00，任务归属结束日\n'
+                '· 跨天班次：下班时间早于上班时间的班次（如晚班 20:00 → 次日 08:00），任务归属结束日\n'
                 '· 班次任务模板：到点自动生成清单，子任务全勾选则父任务自动完成\n'
                 '· 独立事项：随时新增，可一键转成模板任务\n'
-                '· 系统日历单向导入：本版本暂未启用（见「系统日历同步」页说明）\n'
+                '· 法定节假日：日历格右上角标「休」；调休上班的周末标「班」\n'
                 '· JSON 全量导出 / 导入，纯本地无需联网\n\n'
                 '所有数据都保存在手机本地的 SQLite 数据库里，不会上传到任何服务器。',
                 style: TextStyle(fontSize: 12.5, height: 1.8),

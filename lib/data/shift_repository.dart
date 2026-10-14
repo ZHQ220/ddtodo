@@ -209,7 +209,7 @@ class ShiftRepository extends ChangeNotifier {
     final db = Db.instance;
     await db.delete(AppDatabase.tException);
     await db.delete(AppDatabase.tCycle);
-    // 清掉按班次自动生成的任务，保留用户自己加的事项与被导入的日历事项。
+    // 清掉按班次自动生成的任务，保留用户自己加的独立事项。
     await db.delete(
       AppDatabase.tDaily,
       where: 'is_custom = 0 AND source_type = ?',

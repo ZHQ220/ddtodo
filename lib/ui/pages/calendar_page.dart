@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_colors.dart';
 import '../../core/date_utils.dart';
-import '../../models/models.dart';
+import '../../core/holidays.dart';
 import '../app_state.dart';
 import '../widgets/common.dart';
 import 'day_detail_sheet.dart';
@@ -279,6 +279,8 @@ class _DayCell extends StatelessWidget {
     final shiftColor = shift == null ? null : AppColors.fromHex(shift.colorHex);
     final count = state.taskCount(date);
     final weekend = date.weekday == DateTime.saturday || date.weekday == DateTime.sunday;
+    // 法定节假日「休」/ 调休上班「班」小角标（普通周末不标）。
+    final holiday = Holidays.badgeOf(date);
 
     return GestureDetector(
       onTap: onTap,
@@ -295,72 +297,114 @@ class _DayCell extends StatelessWidget {
               : (selected ? AppColors.tint(AppColors.primary, 0.08) : null),
         ),
         padding: const EdgeInsets.fromLTRB(2, 5, 2, 3),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            // 日期数字
-            Center(
-              child: Container(
-                width: 24,
-                height: 24,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: today ? AppColors.tint(AppColors.primary, 0.22) : null,
-                  border: selected
-                      ? Border.all(color: AppColors.primary, width: 1.4)
-                      : null,
-                ),
-                child: Text(
-                  '${date.day}',
-                  style: TextStyle(
-                    fontSize: 14,
-                    height: 1.05,
-                    fontWeight: today || selected ? FontWeight.w700 : FontWeight.w500,
-                    color: today || selected
-                        ? AppColors.primary
-                        : (weekend ? const Color(0xFF8A6A4A) : AppColors.textPrimary),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 1),
-            // 农历 / 节日 / 节气
-            Center(
-              child: Text(
-                state.lunarLabel(date),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 9, height: 1.1, color: AppColors.textMuted),
-              ),
-            ),
-            const SizedBox(height: 3),
-            // 班次色块
-            if (shift != null) ShiftChip(shift: shift, dense: true),
-            const Spacer(),
-            // 任务数量圆点（未完成）
-            if (count > 0)
-              Align(
-                alignment: Alignment.bottomRight,
-                child: Container(
-                  margin: const EdgeInsets.only(right: 3, bottom: 1),
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0.5),
-                  decoration: BoxDecoration(
-                    color: AppColors.tint(AppColors.primary, 0.16),
-                    borderRadius: BorderRadius.circular(7),
-                  ),
-                  child: Text(
-                    '$count',
-                    style: const TextStyle(
-                      fontSize: 9,
-                      height: 1.2,
-                      color: AppColors.primary,
-                      fontWeight: FontWeight.w600,
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 日期数字
+                Center(
+                  child: Container(
+                    width: 24,
+                    height: 24,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: today ? AppColors.tint(AppColors.primary, 0.22) : null,
+                      border: selected
+                          ? Border.all(color: AppColors.primary, width: 1.4)
+                          : null,
+                    ),
+                    child: Text(
+                      '${date.day}',
+                      style: TextStyle(
+                        fontSize: 14,
+                        height: 1.05,
+                        fontWeight: today || selected ? FontWeight.w700 : FontWeight.w500,
+                        color: today || selected
+                            ? AppColors.primary
+                            : (weekend ? const Color(0xFF8A6A4A) : AppColors.textPrimary),
+                      ),
                     ),
                   ),
                 ),
+                const SizedBox(height: 1),
+                // 农历 / 节日 / 节气
+                Center(
+                  child: Text(
+                    state.lunarLabel(date),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 9, height: 1.1, color: AppColors.textMuted),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                // 班次色块
+                if (shift != null) ShiftChip(shift: shift, dense: true),
+                const Spacer(),
+                // 任务数量圆点（未完成）
+                if (count > 0)
+                  Align(
+                    alignment: Alignment.bottomRight,
+                    child: Container(
+                      margin: const EdgeInsets.only(right: 3, bottom: 1),
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0.5),
+                      decoration: BoxDecoration(
+                        color: AppColors.tint(AppColors.primary, 0.16),
+                        borderRadius: BorderRadius.circular(7),
+                      ),
+                      child: Text(
+                        '$count',
+                        style: const TextStyle(
+                          fontSize: 9,
+                          height: 1.2,
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            if (holiday != null)
+              Positioned(
+                top: 0,
+                right: 0,
+                child: _HolidayBadge(text: holiday),
               ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 日历格右上角的小角标：「休」（法定节假日）或「班」（调休上班）。
+///
+/// 独立占角落，不挤占农历/节气那行小字。
+class _HolidayBadge extends StatelessWidget {
+  const _HolidayBadge({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final isRest = text == '休';
+    final color = isRest ? const Color(0xFFE5484D) : AppColors.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 1.8, vertical: 0.5),
+      decoration: BoxDecoration(
+        color: AppColors.tint(color, 0.14),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 8,
+          height: 1.15,
+          fontWeight: FontWeight.w700,
+          color: color,
         ),
       ),
     );

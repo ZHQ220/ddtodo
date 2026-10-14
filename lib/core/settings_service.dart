@@ -10,7 +10,6 @@ class SettingsService extends ChangeNotifier {
   static const _kInitialized = 'db_initialized_v1';
   static const _kShowLunar = 'show_lunar';
   static const _kWeekStartMonday = 'week_start_monday';
-  static const _kDefaultCrossDay = 'default_cross_day';
   static const _kLastDate = 'last_selected_date';
 
   static Future<SettingsService> load() async {
@@ -42,14 +41,6 @@ class SettingsService extends ChangeNotifier {
 
   Future<void> setWeekStartMonday(bool v) async {
     await _prefs.setBool(_kWeekStartMonday, v);
-    notifyListeners();
-  }
-
-  /// 晚班跨天：默认开启，用户可在设置里关掉。
-  bool get defaultCrossDay => _prefs.getBool(_kDefaultCrossDay) ?? true;
-
-  Future<void> setDefaultCrossDay(bool v) async {
-    await _prefs.setBool(_kDefaultCrossDay, v);
     notifyListeners();
   }
 

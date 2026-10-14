@@ -10,6 +10,13 @@ class TemplateRepository extends ChangeNotifier {
 
   List<TaskTemplate> get all => _all;
 
+  /// 模板「版本号」：每次 [load]（= 任何增删改之后）都会 +1。
+  ///
+  /// [TaskRepository] 用它判断「这一天是不是已经按最新模板生成过了」，
+  /// 从而做到：改完模板后，今天及以后的日子会自动补齐 / 同步。
+  int get revision => _revision;
+  int _revision = 0;
+
   /// 某个班次的全部模板（父 + 子，已按 sort_order 排序）。
   List<TaskTemplate> forShift(int shiftTypeId) =>
       _all.where((t) => t.shiftTypeId == shiftTypeId).toList()
@@ -44,6 +51,7 @@ class TemplateRepository extends ChangeNotifier {
       orderBy: 'shift_type_id ASC, sort_order ASC, id ASC',
     );
     _all = rows.map(TaskTemplate.fromMap).toList();
+    _revision++;
     notifyListeners();
   }
 

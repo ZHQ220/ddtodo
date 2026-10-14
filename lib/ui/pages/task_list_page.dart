@@ -226,7 +226,7 @@ class _TaskListPageState extends State<TaskListPage> {
             _emptyToday()
           else
             for (var i = 0; i < roots.length; i++)
-              _card(all, roots[i], i + 1, accent, today),
+              _card(all, roots[i], i + 1, accent),
         ],
       ),
     );
@@ -383,7 +383,7 @@ class _TaskListPageState extends State<TaskListPage> {
           ),
         ),
         for (var i = 0; i < roots.length; i++)
-          _card(all, roots[i], i + 1, accent, date, dateChevron: false),
+          _card(all, roots[i], i + 1, accent),
       ],
     );
   }
@@ -396,9 +396,7 @@ class _TaskListPageState extends State<TaskListPage> {
     DailyTask root,
     int number,
     Color accent,
-    DateTime? date, {
-    bool dateChevron = true,
-  }) {
+  ) {
     final descendants = _flatten(all, root);
     final shiftColor = root.shiftTypeId == null
         ? accent
@@ -415,10 +413,7 @@ class _TaskListPageState extends State<TaskListPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (root.source == TaskSource.calendar)
-            _row(root, 0, shiftColor, outline: true)
-          else
-            _row(root, 0, shiftColor, number: number),
+          _row(root, 0, shiftColor, number: number),
           for (final entry in descendants)
             _row(entry.key, entry.value, shiftColor, outline: true),
           const SizedBox(height: 4),
@@ -436,11 +431,7 @@ class _TaskListPageState extends State<TaskListPage> {
   }) {
     final indent = depth == 0 ? 12.0 : 20.0 + depth * 16;
     final fontSize = depth == 0 ? 14.5 : (depth == 1 ? 13.5 : 12.5);
-    final color = depth == 0
-        ? (task.source == TaskSource.calendar
-            ? AppColors.imported
-            : AppColors.textPrimary)
-        : AppColors.textSecondary;
+    final color = depth == 0 ? AppColors.textPrimary : AppColors.textSecondary;
 
     return Padding(
       padding: EdgeInsets.fromLTRB(indent, depth == 0 ? 10 : 1, 6, depth == 0 ? 8 : 1),
@@ -484,12 +475,6 @@ class _TaskListPageState extends State<TaskListPage> {
               ],
             ),
           ),
-          if (task.source == TaskSource.calendar)
-            const Padding(
-              padding: EdgeInsets.only(right: 2),
-              child: Icon(Icons.event_available_outlined,
-                  size: 15, color: AppColors.imported),
-            ),
         ],
       ),
     );

@@ -135,6 +135,16 @@ class AppState extends ChangeNotifier {
     await loadSelectedDay();
   }
 
+  /// 班次任务模板改动后调用：立刻把「今天及以后」的任务补齐 / 同步，并刷新界面。
+  ///
+  /// 用户要求：保存模板后返回日历就能看到那一天的任务；过去的日子保持原样。
+  Future<void> syncTemplateChanges() async {
+    final to = DayUtil.addDays(
+        DateTime(_visibleMonth.year, _visibleMonth.month + 1, 1), -1);
+    await tasks.syncTemplateChanges(from: DayUtil.today(), until: to);
+    await refreshAll();
+  }
+
   /// 任务数据变化后的轻量刷新：不重新实例化，只重算数量与当天列表。
   Future<void> refreshCounts() async {
     final from = DayUtil.firstOfMonth(_visibleMonth);
@@ -155,7 +165,7 @@ class AppState extends ChangeNotifier {
     return text;
   }
 
-  /// 该日期格显示的班次（跨天班次归属结束日）。
+  /// 该日期格显示的班次（跨天班次——下班时间早于上班时间的——归属结束日）。
   ShiftType? shiftForCell(DateTime date) => tasks.effectiveShiftOfDay(date);
 
   /// 该日期「开始上班」的班次（单天覆盖弹窗里显示当前值用）。

@@ -38,7 +38,6 @@ class AppDatabase {
       'color': '#2FB344',
       'is_preset': 1,
       'kind': 'morning',
-      'cross_day': 0,
       'start_time': '06:00',
       'end_time': '14:00',
       'sort_order': 0,
@@ -49,7 +48,6 @@ class AppDatabase {
       'color': '#E5484D',
       'is_preset': 1,
       'kind': 'middle',
-      'cross_day': 0,
       'start_time': '14:00',
       'end_time': '20:00',
       'sort_order': 1,
@@ -60,7 +58,6 @@ class AppDatabase {
       'color': '#3B82F6',
       'is_preset': 1,
       'kind': 'night',
-      'cross_day': 1,
       'start_time': '20:00',
       'end_time': '08:00',
       'sort_order': 2,
@@ -71,7 +68,6 @@ class AppDatabase {
       'color': '#F59E0B',
       'is_preset': 1,
       'kind': 'work',
-      'cross_day': 0,
       'start_time': '08:00',
       'end_time': '17:00',
       'sort_order': 3,
@@ -82,7 +78,6 @@ class AppDatabase {
       'color': '#6B7280',
       'is_preset': 1,
       'kind': 'rest',
-      'cross_day': 0,
       'start_time': null,
       'end_time': null,
       'sort_order': 4,
@@ -103,7 +98,6 @@ class AppDatabase {
       color       TEXT NOT NULL,
       is_preset   INTEGER NOT NULL DEFAULT 0,
       kind        TEXT NOT NULL DEFAULT 'custom',
-      cross_day   INTEGER NOT NULL DEFAULT 0,
       start_time  TEXT,
       end_time    TEXT,
       sort_order  INTEGER NOT NULL DEFAULT 0,
@@ -156,6 +150,8 @@ class AppDatabase {
       template_id   INTEGER,
       sort_order    INTEGER NOT NULL DEFAULT 0,
       deleted       INTEGER NOT NULL DEFAULT 0,
+      -- 历史遗留列：早期「系统日历导入」用的事件 id。
+      -- 功能已移除，保留此列是为了让旧备份 JSON 仍能原样恢复。
       external_id   TEXT
     )
     ''',

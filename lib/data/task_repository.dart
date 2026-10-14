@@ -15,27 +15,28 @@ class TaskRepository extends ChangeNotifier {
   final ShiftRepository _shifts;
   final TemplateRepository _templates;
 
-  /// 已经实例化过的「日期|班次键」，避免同一次会话重复跑生成逻辑。
-  final Set<String> _ensured = {};
+  /// 「日期|班次键」→ 上一次实例化时所用的模板版本号。
+  ///
+  /// 同一版本不重复跑；模板改过之后版本号变了，会重新对账（见 [ensureDay]）。
+  final Map<String, int> _ensured = {};
 
   // -------------------------------------------------- 排班归属计算
 
-  /// 计算某天的班次实例（考虑跨天归属与单天覆盖）。
+  /// 计算某天的班次实例（考虑跨午夜归属与单天覆盖）。
   ///
   /// 返回两个实例：
-  ///  * [ShiftInstance]：班次开始日就是这一天；
-  ///  * [ShiftInstance.crossOver]：前一天的跨天班次延续到今天（若有）。
-  /// 任务的 `date` 归属结束日，所以跨天班次的任务在前者里带上 `dateOffset`。
+  ///  * 班次开始日就是这一天；
+  ///  * 前一天跨午夜的班次延续到今天（若有，见 [ShiftType.crossesMidnight]）。
+  /// 任务的 `date` 归属结束日，所以跨午夜的班次在后者里带上 `dateOffset`。
   List<ScheduleInstance> scheduleFor(DateTime day) {
     final result = <ScheduleInstance>[];
 
-    // 1) 延续到今天的跨天班次（开始于昨天）。
+    // 1) 延续到今天的跨午夜班次（开始于昨天）。
     final prevShift = shiftOfDay(DayUtil.addDays(day, -1));
-    if (prevShift != null && prevShift.crossDay) {
+    if (prevShift != null && prevShift.crossesMidnight) {
       result.add(ScheduleInstance(
         shiftDate: DayUtil.iso(DayUtil.addDays(day, -1)),
         shiftTypeId: prevShift.id!,
-        crossDay: true,
         dateOffset: 1,
       ));
     }
@@ -43,17 +44,17 @@ class TaskRepository extends ChangeNotifier {
     // 2) 今天开始的班次。
     final today = shiftOfDay(day);
     if (today != null) {
+      final crosses = today.crossesMidnight;
       result.add(ScheduleInstance(
         shiftDate: DayUtil.iso(day),
         shiftTypeId: today.id!,
-        crossDay: today.crossDay,
-        dateOffset: today.crossDay ? 1 : 0,
+        dateOffset: crosses ? 1 : 0,
       ));
     }
     return result;
   }
 
-  /// 某天「开始上班」的班次（不做跨天延续判断）；无排班返回 null。
+  /// 某天「开始上班」的班次（不做跨午夜延续判断）；无排班返回 null。
   ShiftType? shiftOfDay(DateTime day) {
     final d = DayUtil.dateOnly(day);
     final override = _shifts.exceptionOf(d);
@@ -68,13 +69,13 @@ class TaskRepository extends ChangeNotifier {
     return _shifts.byId(cycle.pattern[index]);
   }
 
-  /// 某天生效的「结束班次」—— 跨天班次归属结束日，日历格与详情页都用这个。
+  /// 某天生效的「结束班次」—— 跨午夜班次归属结束日，日历格与详情页都用这个。
   ///
   /// 规则：晚班（20:00 → 次日 08:00）的任务全部算在**次日**。
-  /// 因此某天的主题班次是：昨天开始的跨天班次优先，否则当天开始的班次。
+  /// 因此某天的主题班次是：昨天开始的跨午夜班次优先，否则当天开始的班次。
   ShiftType? effectiveShiftOfDay(DateTime day) {
     final prev = shiftOfDay(DayUtil.addDays(day, -1));
-    if (prev != null && prev.crossDay) return prev;
+    if (prev != null && prev.crossesMidnight) return prev;
     return shiftOfDay(day);
   }
 
@@ -96,18 +97,63 @@ class TaskRepository extends ChangeNotifier {
     }
   }
 
-  /// 确保某天的任务实例存在。幂等：已有记录不会被重复创建。
-  Future<void> ensureDay(DateTime day) async {
+  /// 班次任务模板改动后调用：把「今天及以后」的已生成日子重新对账与补齐。
+  ///
+  /// [until] 一般传当前显示月份的最后一天；过去的日子保持原样（不动）。
+  /// 用户要求：保存模板后返回日历，就能看到那一天的任务。
+  Future<void> syncTemplateChanges({
+    required DateTime from,
+    required DateTime until,
+  }) async {
+    final today = DayUtil.today();
+    var start = DayUtil.dateOnly(from);
+    if (start.isBefore(today)) start = today;
+    final end = DayUtil.dateOnly(until);
+    if (end.isBefore(start)) return;
+
+    // 只作废「今天及以后」的缓存键：过去的日子继续冻住。
+    final startIso = DayUtil.iso(start);
+    _ensured.removeWhere((key, _) {
+      final bar = key.indexOf('|');
+      final iso = bar < 0 ? key : key.substring(0, bar);
+      return iso.compareTo(startIso) >= 0;
+    });
+
+    var cursor = start;
+    while (!cursor.isAfter(end)) {
+      await ensureDay(cursor);
+      cursor = DayUtil.addDays(cursor, 1);
+    }
+    notifyListeners();
+  }
+
+  /// 确保某天的任务实例存在。
+  ///
+  /// * 幂等：同一天、同一模板版本下只跑一次（`_ensured` 里记的是模板版本号）；
+  /// * 模板改过之后（[TemplateRepository.revision] 变了）会重新对账：补上新增的
+  ///   模板任务，并让**未完成**的实例跟着模板改名 / 改提醒 / 删除；
+  /// * 模板改动只影响**今天及以后**：过去的日子一旦生成过就冻住不动。
+  Future<void> ensureDay(DateTime day, {bool force = false}) async {
     final d = DayUtil.dateOnly(day);
     final db = Db.instance;
+    final revision = _templates.revision;
+    final today = DayUtil.today();
 
     for (final inst in scheduleFor(d)) {
       final key = '${DayUtil.iso(d)}|${inst.shiftTypeId}';
-      if (_ensured.contains(key)) continue;
+      final seen = _ensured[key];
+      if (seen == revision) continue;
+      if (!force && d.isBefore(today)) {
+        // 过去的日子保持原样：不生成、也不跟着模板改动走。
+        _ensured[key] = revision;
+        continue;
+      }
 
       final templates = _templates.forShift(inst.shiftTypeId);
       if (templates.isEmpty) {
-        _ensured.add(key);
+        // 模板可能刚被删光：仍然对账一次，把未完成的旧实例清掉。
+        await _reconcileDay(d, inst.shiftTypeId);
+        _ensured[key] = revision;
         continue;
       }
 
@@ -175,8 +221,60 @@ class TaskRepository extends ChangeNotifier {
         idByTemplate[tpl.id!] = id;
       }
 
-      _ensured.add(key);
+      // 模板改动后的对账：未完成的实例跟着模板改名 / 改提醒 / 删除。
+      await _reconcileDay(d, inst.shiftTypeId);
+
+      _ensured[key] = revision;
     }
+  }
+
+  /// 把某天「由模板生成、尚未完成」的实例与当前模板对齐。
+  ///
+  /// * 模板改名 / 改提醒 → 同步到实例上；
+  /// * 模板被删 → 给未完成的实例写删除墓碑（用户手动删过的那天也不会再补回来）；
+  /// * **已完成的实例一律保留不动**（用户已经做过的记录）。
+  Future<void> _reconcileDay(DateTime d, int shiftTypeId) async {
+    final rows = await Db.instance.query(
+      AppDatabase.tDaily,
+      where: 'shift_date = ? AND shift_type_id = ? '
+          'AND template_id IS NOT NULL AND deleted = 0 AND is_completed = 0',
+      whereArgs: [DayUtil.iso(d), shiftTypeId],
+    );
+    if (rows.isEmpty) return;
+
+    final db = Db.instance;
+    for (final row in rows) {
+      final task = DailyTask.fromMap(row);
+      final tpl = _templates.byId(task.templateId);
+      if (tpl == null) {
+        await _tombstoneUnfinished(task);
+      } else if (tpl.title != task.title || tpl.remindTime != task.remindTime) {
+        await db.update(
+          AppDatabase.tDaily,
+          {'title': tpl.title, 'remind_time': tpl.remindTime},
+          where: 'id = ?',
+          whereArgs: [task.id],
+        );
+      }
+    }
+  }
+
+  /// 给某个任务以及它**未完成**的下级写删除墓碑（已完成的保留）。
+  Future<void> _tombstoneUnfinished(DailyTask task) async {
+    final id = task.id;
+    if (id == null) return;
+    final children = await _descendants(id);
+    final ids = <int>[
+      id,
+      ...children.where((t) => !t.isCompleted).map((t) => t.id!),
+    ];
+    final placeholders = List.filled(ids.length, '?').join(',');
+    await Db.instance.update(
+      AppDatabase.tDaily,
+      {'deleted': 1},
+      where: 'id IN ($placeholders)',
+      whereArgs: ids,
+    );
   }
 
   Future<int?> _findParentDailyId(Database db, String date, int? parentTemplateId) async {
@@ -205,19 +303,6 @@ class TaskRepository extends ChangeNotifier {
       orderBy: 'sort_order ASC, id ASC',
     );
     return rows.map(DailyTask.fromMap).toList();
-  }
-
-  /// 某天已合入的导入来源（用于去重，避免重复导入升级成副本）。
-  Future<Set<String>> importedKeys() async {
-    final rows = await Db.instance.query(
-      AppDatabase.tDaily,
-      columns: ['external_id'],
-      where: 'source_type = ? AND external_id IS NOT NULL',
-      whereArgs: [TaskSource.calendar.name],
-    );
-    return {
-      for (final r in rows) (r['external_id'] as String?) ?? '',
-    }..remove('');
   }
 
   /// 月视图用：统计每个日期的未完成任务数。
@@ -278,8 +363,6 @@ class TaskRepository extends ChangeNotifier {
     required String title,
     int? shiftTypeId,
     String? remindTime,
-    TaskSource source = TaskSource.app,
-    String? externalId,
     String? description,
   }) async {
     final iso = DayUtil.iso(date);
@@ -291,13 +374,12 @@ class TaskRepository extends ChangeNotifier {
       'title': display,
       'is_completed': 0,
       'is_custom': 1,
-      'source_type': source.name,
+      'source_type': TaskSource.app.name,
       'remind_time': remindTime,
       'parent_id': null,
       'template_id': null,
       'sort_order': 9000,
       'deleted': 0,
-      'external_id': externalId,
     });
     notifyListeners();
     return id;
@@ -487,12 +569,12 @@ class TaskRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 清空某天的全部「非导入」任务。
+  /// 清空某天的全部任务（软删除的墓碑也会被清掉）。
   Future<void> clearDay(DateTime day) async {
     await Db.instance.delete(
       AppDatabase.tDaily,
-      where: 'date = ? AND source_type <> ? AND deleted = 0',
-      whereArgs: [DayUtil.iso(day), TaskSource.calendar.name],
+      where: 'date = ? AND deleted = 0',
+      whereArgs: [DayUtil.iso(day)],
     );
     _ensured.clear();
     notifyListeners();
@@ -506,17 +588,8 @@ class TaskRepository extends ChangeNotifier {
       whereArgs: [DayUtil.iso(day), TaskSource.app.name],
     );
     _ensured.clear();
-    return ensureAndLoad(day);
-  }
-
-  /// 导入期间清空日历来源的任务（重新导入时调用）。
-  Future<void> clearImported() async {
-    await Db.instance.delete(
-      AppDatabase.tDaily,
-      where: 'source_type = ?',
-      whereArgs: [TaskSource.calendar.name],
-    );
-    notifyListeners();
+    await ensureDay(day, force: true);
+    return tasksForDay(day);
   }
 
   /// 清空所有任务。

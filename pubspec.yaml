@@ -1,5 +1,5 @@
 name: dd_todo
-description: "DDtodo —— 排班与待办清单（纯本地 SQLite，支持系统日历导入与 JSON 备份）"
+description: "DDtodo —— 排班与待办清单（纯本地 SQLite，含农历、法定节假日角标与 JSON 备份）"
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -19,13 +19,10 @@ dependencies:
   # 轻量键值存储（用户偏好、上次选中的日期等）
   shared_preferences: ^2.3.2
 
-  # 系统日历（只读导入）
-  #
-  # ⚠️ 暂时停用：device_calendar 最后更新于 2024-09，与较新的
-  #    Flutter / Android Gradle 插件存在不兼容风险，会让第一次打包失败。
-  #    为了让核心功能一次就能打出 APK，这一版先把它注释掉。
-  #    想重新启用：取消下面这行注释，并恢复 lib/services/calendar_service.dart
-  #    里标注的「启用版」实现（该文件末尾写了具体做法和原代码逻辑）。
+  # 系统日历同步功能已整体删除（设置页入口、页面、服务代码全删）。
+  # 原来用的 device_calendar 最后更新于 2024-09，与较新的 Flutter / Android
+  # Gradle 插件不兼容，会让打包失败；而且这个功能确认不需要，所以不再引入。
+  # 将来若要做导入，请自己实现并自行承担依赖风险，不要直接加回下面这行：
   # device_calendar: ^4.3.3
 
   # 从本机选择 JSON 备份文件

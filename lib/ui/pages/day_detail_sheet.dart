@@ -10,7 +10,7 @@ import '../widgets/common.dart';
 /// 底部上滑的「当日详情」弹窗。
 ///
 /// 视觉参考图 2：青绿头部日期条 + 白色卡片列表
-/// （班次任务集 / 独立事项 / 导入的系统日历事项）+ 右下悬浮「+」。
+/// （班次任务集 / 独立事项）+ 右下悬浮「+」。
 Future<void> showDayDetailSheet(BuildContext context, AppState state, DateTime date) {
   return showModalBottomSheet<void>(
     context: context,
@@ -36,7 +36,6 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
   bool _loading = true;
   List<DailyTask> _shiftTasks = [];
   List<DailyTask> _customTasks = [];
-  List<DailyTask> _importedTasks = [];
 
   final Set<int> _collapsed = {};
 
@@ -51,13 +50,8 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
     final tasks = await state.tasks.ensureAndLoad(date);
     if (!mounted) return;
     setState(() {
-      _shiftTasks = tasks
-          .where((t) => t.source == TaskSource.app && !t.isCustom)
-          .toList();
-      _customTasks = tasks
-          .where((t) => t.source == TaskSource.app && t.isCustom)
-          .toList();
-      _importedTasks = tasks.where((t) => t.source == TaskSource.calendar).toList();
+      _shiftTasks = tasks.where((t) => !t.isCustom).toList();
+      _customTasks = tasks.where((t) => t.isCustom).toList();
       _loading = false;
     });
   }
@@ -84,7 +78,7 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
                           child: ListView(
                             padding: const EdgeInsets.fromLTRB(0, 0, 0, 90),
                             children: [
-                              if (_shiftTasks.isEmpty && _customTasks.isEmpty && _importedTasks.isEmpty)
+                              if (_shiftTasks.isEmpty && _customTasks.isEmpty)
                                 const Padding(
                                   padding: EdgeInsets.only(top: 40),
                                   child: EmptyHint(
@@ -94,7 +88,6 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
                                 ),
                               _shiftSection(),
                               _customSection(),
-                              _importedSection(),
                             ],
                           ),
                         ),
@@ -198,7 +191,7 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
                   const SizedBox(width: 8),
                   Text(
                     '${s.startTime ?? '--:--'} — ${s.endTime ?? '--:--'}'
-                    '${s.crossDay ? '（跨天）' : ''}',
+                    '${s.crossesMidnight ? '（跨天）' : ''}',
                     style: const TextStyle(color: Colors.white70, fontSize: 11.5),
                   ),
                 ],
@@ -245,32 +238,6 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
     );
   }
 
-  Widget _importedSection() {
-    if (_importedTasks.isEmpty) return const SizedBox.shrink();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _sectionLabel('系统日历导入', trailing: '${_importedTasks.length} 条'),
-        Container(
-          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.divider),
-          ),
-          child: Column(
-            children: [
-              for (var i = 0; i < _importedTasks.length; i++) ...[
-                if (i > 0) const Divider(height: 1, indent: 44),
-                _importedTile(_importedTasks[i]),
-              ],
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _sectionLabel(String text, {String? trailing}) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
@@ -298,9 +265,8 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
   int _doneCount(List<DailyTask> list) =>
       list.where((t) => t.parentId == null && t.isCompleted).length;
 
-  /// 当天的全部任务（三个板块合起来，用于找父子关系）。
-  List<DailyTask> get _allTasks =>
-      [..._shiftTasks, ..._customTasks, ..._importedTasks];
+  /// 当天的全部任务（两个板块合起来，用于找父子关系）。
+  List<DailyTask> get _allTasks => [..._shiftTasks, ..._customTasks];
 
   /// 某个任务的直接下级。
   List<DailyTask> _childrenOf(DailyTask parent) {
@@ -495,39 +461,6 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
             ),
           ),
           _menu(child, compact: true),
-        ],
-      ),
-    );
-  }
-
-  Widget _importedTile(DailyTask task) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-      child: Row(
-        children: [
-          TaskCheckCircle(
-            checked: task.isCompleted,
-            size: 20,
-            onTap: () async {
-              await state.tasks.toggle(task);
-              await _load();
-              await state.refreshCounts();
-            },
-          ),
-          const SizedBox(width: 6),
-          const Icon(Icons.event_available_outlined, size: 15, color: AppColors.imported),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              task.title,
-              style: TextStyle(
-                fontSize: 13.5,
-                height: 1.35,
-                color: AppColors.imported,
-                decoration: task.isCompleted ? TextDecoration.lineThrough : null,
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -889,7 +822,7 @@ Future<int?> showShiftPicker(
                     subtitle: (s.startTime != null || s.endTime != null)
                         ? Text(
                             '${s.startTime ?? '--:--'} - ${s.endTime ?? '--:--'}'
-                            '${s.crossDay ? ' · 跨天（任务归属结束日）' : ''}',
+                            '${s.crossesMidnight ? ' · 跨天（任务归属结束日）' : ''}',
                             style: const TextStyle(fontSize: 11.5),
                           )
                         : null,

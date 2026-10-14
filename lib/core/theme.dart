@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../core/app_colors.dart';
+import 'app_colors.dart';
 
 /// 应用主题。整体走图 2 的「青绿 + 浅灰底 + 白卡片」风格。
 class AppTheme {

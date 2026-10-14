@@ -31,7 +31,6 @@ class DDTodoApp extends StatelessWidget {
         '/shifts': (_) => ShiftSettingsPage(state: state),
         '/templates': (_) => TemplateSettingsPage(state: state),
         '/data': (_) => DataSettingsPage(state: state),
-        '/calendar': (_) => CalendarSyncPage(state: state),
         '/about': (_) => const AboutPage(),
       },
     );
@@ -99,13 +98,15 @@ class _HomeShellState extends State<HomeShell> {
                 );
                 return;
               }
-              Navigator.of(context).pushNamed(value);
+              // 从设置类页面返回后刷新任务列表与日历（模板/排班改动会影响任务）。
+              Navigator.of(context).pushNamed(value).then((_) {
+                if (mounted) setState(() => _refreshToken++);
+              });
             },
             itemBuilder: (context) => const [
               PopupMenuItem(value: '/shifts', child: Text('排班规则管理')),
               PopupMenuItem(value: '/templates', child: Text('班次任务模板')),
               PopupMenuItem(value: '/data', child: Text('数据导入导出')),
-              PopupMenuItem(value: '/calendar', child: Text('系统日历同步')),
             ],
           ),
         ],

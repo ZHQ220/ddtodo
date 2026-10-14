@@ -22,9 +22,6 @@ class AppColors {
   static const Color textSecondary = Color(0xFF6B7280);
   static const Color textMuted = Color(0xFF9CA3AF);
 
-  /// 系统日历导入项的专用灰色
-  static const Color imported = Color(0xFF8A8F98);
-
   /// 危险操作（恢复出厂、删除全部数据）用的红色
   static const Color danger = Color(0xFFE5484D);
 
