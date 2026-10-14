@@ -38,7 +38,7 @@ class AppState extends ChangeNotifier {
   static Future<AppState> boot() async {
     await Db.open();
     final settings = await SettingsService.load();
-    final shifts = ShiftRepository();
+    final shifts = ShiftRepository(settings);
     final templates = TemplateRepository();
     final tasks = TaskRepository(shifts, templates);
 
@@ -48,6 +48,14 @@ class AppState extends ChangeNotifier {
     final state = AppState._(settings, shifts, templates, tasks);
     _instance = state;
     await state.settings.markInitialized();
+
+    // 用户要求：选过日期的话，下次打开恢复上次看的那一天（含它所在的月份）；
+    // 从来没选过（首次启动）才默认今天。
+    final restored = DayUtil.tryParseIso(settings.lastDate ?? '');
+    if (restored != null) {
+      state._selectedDate = DayUtil.dateOnly(restored);
+      state._visibleMonth = DayUtil.firstOfMonth(state._selectedDate);
+    }
     return state;
   }
 
@@ -138,10 +146,16 @@ class AppState extends ChangeNotifier {
   /// 班次任务模板改动后调用：立刻把「今天及以后」的任务补齐 / 同步，并刷新界面。
   ///
   /// 用户要求：保存模板后返回日历就能看到那一天的任务；过去的日子保持原样。
+  /// 切换排班周期时也走这里：班次变了的那些天会把旧班次遗留的未完成任务清掉，
+  /// 换成新周期的任务清单。
   Future<void> syncTemplateChanges() async {
-    final to = DayUtil.addDays(
+    final today = DayUtil.today();
+    final monthEnd = DayUtil.addDays(
         DateTime(_visibleMonth.year, _visibleMonth.month + 1, 1), -1);
-    await tasks.syncTemplateChanges(from: DayUtil.today(), until: to);
+    final todayMonthEnd =
+        DayUtil.addDays(DateTime(today.year, today.month + 1, 1), -1);
+    final to = monthEnd.isAfter(todayMonthEnd) ? monthEnd : todayMonthEnd;
+    await tasks.syncTemplateChanges(from: today, until: to);
     await refreshAll();
   }
 
@@ -165,11 +179,20 @@ class AppState extends ChangeNotifier {
     return text;
   }
 
-  /// 该日期格显示的班次（跨天班次——下班时间早于上班时间的——归属结束日）。
-  ShiftType? shiftForCell(DateTime date) => tasks.effectiveShiftOfDay(date);
+  /// 该日期格显示的班次。
+  ///
+  /// 一天一个班次；夜班（如 22:00 → 次日 07:30）算在**结束那一天**，
+  /// 所以 14 号夜班只会显示在 14 号，13 号不会出现晚班。
+  ShiftType? shiftForCell(DateTime date) => tasks.shiftOfDay(date);
 
-  /// 该日期「开始上班」的班次（单天覆盖弹窗里显示当前值用）。
-  ShiftType? startingShift(DateTime date) => tasks.shiftOfDay(date);
+  /// 手动指定「从现在起用哪一条排班周期」（从今天生效，过去不变）。
+  ///
+  /// 之后打开某天时会按新周期重新对账：班次变了的那些天会把旧班次遗留的
+  /// 未完成任务清掉，并生成新班次的任务。
+  Future<void> activateCycle(ShiftCycle cycle) async {
+    await settings.setActiveCycle(cycle.id, from: DayUtil.iso(DayUtil.today()));
+    await syncTemplateChanges();
+  }
 
   /// 未完成任务数量；0 表示不显示圆点。
   int taskCount(DateTime date) => _counts?[DayUtil.iso(date)] ?? 0;

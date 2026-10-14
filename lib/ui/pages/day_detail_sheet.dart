@@ -56,7 +56,8 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
     });
   }
 
-  ShiftType? get shift => state.tasks.effectiveShiftOfDay(date);
+  /// 当天归属的班次（夜班算在结束那一天）。
+  ShiftType? get shift => state.tasks.shiftOfDay(date);
 
   @override
   Widget build(BuildContext context) {
@@ -145,6 +146,16 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
                 onPressed: _pickShift,
                 icon: const Icon(Icons.swap_horiz, color: Colors.white),
               ),
+              PopupMenuButton<String>(
+                tooltip: '更多',
+                icon: const Icon(Icons.more_vert, color: Colors.white),
+                onSelected: (value) {
+                  if (value == 'clear-day') _clearDay();
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(value: 'clear-day', child: Text('清空当天任务')),
+                ],
+              ),
               IconButton(
                 tooltip: '关闭',
                 onPressed: () => Navigator.of(context).pop(),
@@ -190,8 +201,9 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
                 if (s != null && (s.startTime != null || s.endTime != null)) ...[
                   const SizedBox(width: 8),
                   Text(
-                    '${s.startTime ?? '--:--'} — ${s.endTime ?? '--:--'}'
-                    '${s.crossesMidnight ? '（跨天）' : ''}',
+                    // 夜班（22:00 → 次日 07:30）标出「次日」，一眼看出时间跨了午夜。
+                    '${s.startTime ?? '--:--'} — '
+                    '${s.startsPreviousDay ? '次日 ' : ''}${s.endTime ?? '--:--'}',
                     style: const TextStyle(color: Colors.white70, fontSize: 11.5),
                   ),
                 ],
@@ -513,8 +525,53 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
     final result = await showShiftPicker(context, state, date);
     if (result == null) return;
     await state.shifts.setException(date, result == -1 ? null : result);
+    // 这一天的班次变了：让这天重新按新班次对账（旧班次留下的未完成任务会被清掉）。
+    await state.tasks.refreshDay(date);
     await state.refreshAll();
     await _load();
+  }
+
+  /// 清空当天全部任务（右上角「···」菜单）。
+  ///
+  /// 用户要求：一键清空、清空前先确认、清空后当天不再自动补回来。
+  Future<void> _clearDay() async {
+    final count = _allTasks.length;
+    if (count == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('当天没有任务')),
+      );
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('清空当天任务'),
+        content: Text(
+          '确定清空 ${date.year}年${date.month}月${date.day}日 的 $count 条任务吗？'
+          '清空后当天不会自动补回来（第二天照常生成）。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await state.tasks.clearDay(date);
+    await state.refreshAll();
+    await _load();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('已清空当天的 $count 条任务')),
+    );
   }
 
   Future<void> _rename(DailyTask task) async {
@@ -821,8 +878,7 @@ Future<int?> showShiftPicker(
                     title: Text(s.name),
                     subtitle: (s.startTime != null || s.endTime != null)
                         ? Text(
-                            '${s.startTime ?? '--:--'} - ${s.endTime ?? '--:--'}'
-                            '${s.crossesMidnight ? ' · 跨天（任务归属结束日）' : ''}',
+                            '${s.startTime ?? '--:--'} - ${s.endTime ?? '--:--'}',
                             style: const TextStyle(fontSize: 11.5),
                           )
                         : null,

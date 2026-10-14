@@ -203,8 +203,7 @@ class _ShiftSettingsPageState extends State<ShiftSettingsPage> {
     final color = AppColors.fromHex(type.colorHex);
     final time = (type.startTime == null && type.endTime == null)
         ? '未设置时间'
-        : '${type.startTime ?? '--:--'} - ${type.endTime ?? '--:--'}'
-            '${type.crossesMidnight ? ' · 跨天（任务归属结束日）' : ''}';
+        : '${type.startTime ?? '--:--'} - ${type.endTime ?? '--:--'}';
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
@@ -329,7 +328,8 @@ class _ShiftSettingsPageState extends State<ShiftSettingsPage> {
         const Padding(
           padding: EdgeInsets.only(left: 4, bottom: 8),
           child: Text(
-            '按生效日期取「最近一条」规则无限循环。改规则只影响今天及以后，不会追溯调整过去的排班。',
+            '默认按生效日期取「最近一条」规则无限循环；也可以在某一条上点「···」→「设为生效」手动指定。'
+            '切换只影响今天及以后，不会追溯调整过去的排班。',
             style: TextStyle(fontSize: 11.5, color: AppColors.textMuted, height: 1.5),
           ),
         ),
@@ -371,16 +371,29 @@ class _ShiftSettingsPageState extends State<ShiftSettingsPage> {
             ),
             trailing: PopupMenuButton<String>(
               onSelected: (value) async {
-                if (value == 'edit') {
+                if (value == 'activate') {
+                  // 手动指定：从今天起改用这一条周期，并把今天及以后的任务重新对账。
+                  await state.activateCycle(cycle);
+                  if (!mounted) return;
+                  setState(() {});
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('已切换到「${cycle.name}」（从今天开始生效）')),
+                  );
+                } else if (value == 'edit') {
                   await _editCycle(existing: cycle);
                 } else if (value == 'delete') {
                   await state.shifts.deleteCycle(cycle.id!);
+                  // 删掉生效中的那一条会切回上一条，任务清单也要跟着重算。
+                  await state.syncTemplateChanges();
+                  if (!mounted) return;
                   setState(() {});
                 }
               },
-              itemBuilder: (context) => const [
-                PopupMenuItem(value: 'edit', child: Text('编辑')),
-                PopupMenuItem(value: 'delete', child: Text('删除')),
+              itemBuilder: (context) => [
+                if (!isActive)
+                  const PopupMenuItem(value: 'activate', child: Text('设为生效')),
+                const PopupMenuItem(value: 'edit', child: Text('编辑')),
+                const PopupMenuItem(value: 'delete', child: Text('删除')),
               ],
             ),
           ),
@@ -437,7 +450,8 @@ class _ShiftSettingsPageState extends State<ShiftSettingsPage> {
       ));
     }
     setState(() {});
-    await state.refreshAll();
+    // 排班变了：把今天及以后的清单重新对账（换过班次的那天会清掉旧班次的任务）。
+    await state.syncTemplateChanges();
   }
 }
 
@@ -471,8 +485,9 @@ class _ShiftTypeEditorState extends State<_ShiftTypeEditor> {
   TimeOfDay? _start;
   TimeOfDay? _end;
 
-  /// 下班时间不晚于上班时间 → 视为跨天（与 ShiftType.crossesMidnight 同一规则）。
-  bool get _crossesMidnight {
+  /// 下班时间不晚于上班时间 → 这个班次是「夜班」，前一天晚上开始上班
+  /// （与 ShiftType.startsPreviousDay 同一规则）。
+  bool get _startsPreviousDay {
     final s = _start, e = _end;
     if (s == null || e == null) return false;
     return e.hour * 60 + e.minute <= s.hour * 60 + s.minute;
@@ -581,12 +596,19 @@ class _ShiftTypeEditorState extends State<_ShiftTypeEditor> {
                 ),
               ],
             ),
-            if (_crossesMidnight)
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
+            if (_startsPreviousDay)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
                 child: Text(
-                  '下班时间不晚于上班时间 —— 按「跨天」处理，任务归属到结束日（次日）。',
-                  style: TextStyle(fontSize: 11.5, color: AppColors.textMuted, height: 1.4),
+                  '下班时间不晚于上班时间，按「夜班」处理：'
+                  '${_format(_start) ?? '--:--'} 上班、次日 ${_format(_end) ?? '--:--'} 下班。'
+                  '夜班显示在结束的那一天，任务也生成在那一天'
+                  '（例如 14 号的夜班 = 13 号 22:00 → 14 号 07:30）。',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: AppColors.textMuted,
+                    height: 1.4,
+                  ),
                 ),
               ),
           ],
@@ -1749,9 +1771,11 @@ class AboutPage extends StatelessWidget {
                 '功能一览\n\n'
                 '· 固定周期排班：设定「几天一轮 + 每天什么班」，日历无限循环填充\n'
                 '· 单天覆盖：长按日历上的某天，直接改这一天的班次\n'
-                '· 修整轮：从某天起换成新的周期，不追溯历史\n'
-                '· 跨天班次：下班时间早于上班时间的班次（如晚班 20:00 → 次日 08:00），任务归属结束日\n'
+                '· 修整轮：排班规则卡片右上角「···」→「设为生效」，从今天起换成这条周期（不追溯历史）\n'
+                '· 夜班：下班时间不晚于上班时间的算夜班（如 22:00 → 次日 07:30），日历与任务都算在结束那一天\n'
                 '· 班次任务模板：到点自动生成清单，子任务全勾选则父任务自动完成\n'
+                '· 换班次 / 换周期后，旧班次没做完的任务会自动清掉，换成当前班次的清单\n'
+                '· 清空当天任务：当日详情右上角「···」→ 一键清空，当天不再自动补回来\n'
                 '· 独立事项：随时新增，可一键转成模板任务\n'
                 '· 法定节假日：日历格右上角标「休」；调休上班的周末标「班」\n'
                 '· JSON 全量导出 / 导入，纯本地无需联网\n\n'

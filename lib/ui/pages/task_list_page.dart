@@ -212,7 +212,7 @@ class _TaskListPageState extends State<TaskListPage> {
   Widget _todayBody() {
     final today = DayUtil.today();
     final all = _tasks;
-    final shift = state.tasks.effectiveShiftOfDay(today);
+    final shift = state.tasks.shiftOfDay(today);
     final accent = shift == null ? AppColors.primary : AppColors.fromHex(shift.colorHex);
     final roots = all.where((t) => t.parentId == null && _needsWork(all, t)).toList();
 
@@ -332,7 +332,7 @@ class _TaskListPageState extends State<TaskListPage> {
 
   Widget _dayGroup(List<DailyTask> all, String iso, List<DailyTask> list) {
     final date = DayUtil.tryParseIso(iso);
-    final shift = date == null ? null : state.tasks.effectiveShiftOfDay(date);
+    final shift = date == null ? null : state.tasks.shiftOfDay(date);
     final accent = shift == null ? AppColors.primary : AppColors.fromHex(shift.colorHex);
     final roots = list.where((t) => t.parentId == null).toList();
     final done = roots.where((t) => t.isCompleted).length;

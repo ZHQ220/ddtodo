@@ -49,6 +49,14 @@ class BackupService {
   static const int formatVersion = 1;
   static const String fileNamePrefix = 'ddtodo-backup';
 
+  /// 历史遗留列：v1 的建表语句里有这些列，v2 已经删掉。
+  ///
+  /// 导入旧备份时如果原样 insert，会报 `no such column`，所以先剔除。
+  static const Map<String, List<String>> _legacyColumns = {
+    // 「跨天班次」开关所在的列，功能已删除（现在由上下班时间自动判断）。
+    AppDatabase.tShiftType: ['cross_day'],
+  };
+
   /// 导出到应用文档目录，返回文件路径。
   static Future<BackupResult> exportToFile({String? directory}) async {
     try {
@@ -157,6 +165,12 @@ class BackupService {
           continue;
         }
         for (final row in rows) {
+          final legacy = _legacyColumns[table];
+          if (legacy != null) {
+            for (final key in legacy) {
+              row.remove(key);
+            }
+          }
           await txn.insert(table, row, conflictAlgorithm: ConflictAlgorithm.replace);
         }
       }

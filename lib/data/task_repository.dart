@@ -22,39 +22,23 @@ class TaskRepository extends ChangeNotifier {
 
   // -------------------------------------------------- 排班归属计算
 
-  /// 计算某天的班次实例（考虑跨午夜归属与单天覆盖）。
+  /// 计算某天归属的班次实例（考虑单天覆盖与排班周期）。
   ///
-  /// 返回两个实例：
-  ///  * 班次开始日就是这一天；
-  ///  * 前一天跨午夜的班次延续到今天（若有，见 [ShiftType.crossesMidnight]）。
-  /// 任务的 `date` 归属结束日，所以跨午夜的班次在后者里带上 `dateOffset`。
+  /// 一天最多一个班次，而且**排班与任务都算在这一天**：
+  /// 夜班（下班时间早于上班时间，如 22:00 → 07:30）是前一天晚上开始上班，
+  /// 但它归属结束那一天 —— 14 号的夜班只显示在 14 号，任务也全在 14 号。
   List<ScheduleInstance> scheduleFor(DateTime day) {
-    final result = <ScheduleInstance>[];
-
-    // 1) 延续到今天的跨午夜班次（开始于昨天）。
-    final prevShift = shiftOfDay(DayUtil.addDays(day, -1));
-    if (prevShift != null && prevShift.crossesMidnight) {
-      result.add(ScheduleInstance(
-        shiftDate: DayUtil.iso(DayUtil.addDays(day, -1)),
-        shiftTypeId: prevShift.id!,
-        dateOffset: 1,
-      ));
-    }
-
-    // 2) 今天开始的班次。
-    final today = shiftOfDay(day);
-    if (today != null) {
-      final crosses = today.crossesMidnight;
-      result.add(ScheduleInstance(
-        shiftDate: DayUtil.iso(day),
-        shiftTypeId: today.id!,
-        dateOffset: crosses ? 1 : 0,
-      ));
-    }
-    return result;
+    final shift = shiftOfDay(day);
+    final id = shift?.id;
+    if (id == null) return const <ScheduleInstance>[];
+    return [
+      ScheduleInstance(shiftDate: DayUtil.iso(day), shiftTypeId: id),
+    ];
   }
 
-  /// 某天「开始上班」的班次（不做跨午夜延续判断）；无排班返回 null。
+  /// 某天归属的班次（考虑单天覆盖与排班周期）；无排班返回 null。
+  ///
+  /// 夜班也算在结束那一天（14 号夜班 = 13 号 22:00 → 14 号 07:30）。
   ShiftType? shiftOfDay(DateTime day) {
     final d = DayUtil.dateOnly(day);
     final override = _shifts.exceptionOf(d);
@@ -67,16 +51,6 @@ class TaskRepository extends ChangeNotifier {
     if (diff < 0) return null;
     final index = diff % cycle.pattern.length;
     return _shifts.byId(cycle.pattern[index]);
-  }
-
-  /// 某天生效的「结束班次」—— 跨午夜班次归属结束日，日历格与详情页都用这个。
-  ///
-  /// 规则：晚班（20:00 → 次日 08:00）的任务全部算在**次日**。
-  /// 因此某天的主题班次是：昨天开始的跨午夜班次优先，否则当天开始的班次。
-  ShiftType? effectiveShiftOfDay(DateTime day) {
-    final prev = shiftOfDay(DayUtil.addDays(day, -1));
-    if (prev != null && prev.crossesMidnight) return prev;
-    return shiftOfDay(day);
   }
 
   // -------------------------------------------------- 按需实例化
@@ -109,9 +83,10 @@ class TaskRepository extends ChangeNotifier {
     var start = DayUtil.dateOnly(from);
     if (start.isBefore(today)) start = today;
     final end = DayUtil.dateOnly(until);
-    if (end.isBefore(start)) return;
 
     // 只作废「今天及以后」的缓存键：过去的日子继续冻住。
+    // 注意：即使 [until] 落在今天之前（正在翻看过去的月份）也要作废，
+    // 否则切换周期后用户翻到未来月份时，旧周期的任务会被当成「已对账」留下来。
     final startIso = DayUtil.iso(start);
     _ensured.removeWhere((key, _) {
       final bar = key.indexOf('|');
@@ -119,11 +94,27 @@ class TaskRepository extends ChangeNotifier {
       return iso.compareTo(startIso) >= 0;
     });
 
+    if (end.isBefore(start)) {
+      notifyListeners();
+      return;
+    }
+
     var cursor = start;
     while (!cursor.isAfter(end)) {
       await ensureDay(cursor);
       cursor = DayUtil.addDays(cursor, 1);
     }
+    notifyListeners();
+  }
+
+  /// 某天的班次被「单天覆盖 / 恢复按周期算」后调用：让这天重新对账。
+  ///
+  /// 只清掉这一天的实例记忆（含「这天不排班」那条），[ensureDay] 就会把不属于
+  /// 当前班次的未完成任务清掉、并补齐新班次的任务；过去的日子仍然保持原样。
+  Future<void> refreshDay(DateTime day) async {
+    final prefix = '${DayUtil.iso(day)}|';
+    _ensured.removeWhere((key, _) => key.startsWith(prefix));
+    await ensureDay(day);
     notifyListeners();
   }
 
@@ -138,16 +129,31 @@ class TaskRepository extends ChangeNotifier {
     final db = Db.instance;
     final revision = _templates.revision;
     final today = DayUtil.today();
+    final shiftId = shiftOfDay(d)?.id;
+
+    // 这天已经没有排班了：把未完成的旧实例清掉（过去的日子不动）。
+    if (shiftId == null) {
+      final key = '${DayUtil.iso(d)}|0';
+      if (_ensured[key] != revision || force) {
+        if (force || !d.isBefore(today)) await _dropStaleInstances(d, null);
+        _ensured[key] = revision;
+      }
+      return;
+    }
 
     for (final inst in scheduleFor(d)) {
       final key = '${DayUtil.iso(d)}|${inst.shiftTypeId}';
       final seen = _ensured[key];
-      if (seen == revision) continue;
+      if (seen == revision && !force) continue;
       if (!force && d.isBefore(today)) {
-        // 过去的日子保持原样：不生成、也不跟着模板改动走。
+        // 过去的日子保持原样：不生成、也不跟着模板 / 排班改动走。
         _ensured[key] = revision;
         continue;
       }
+
+      // 这天换过班次（例如从早班改成中班）时，先把旧班次留下的未完成任务清掉，
+      // 否则中班那天的清单里会混着早班的任务。
+      await _dropStaleInstances(d, inst.shiftTypeId);
 
       final templates = _templates.forShift(inst.shiftTypeId);
       if (templates.isEmpty) {
@@ -157,7 +163,8 @@ class TaskRepository extends ChangeNotifier {
         continue;
       }
 
-      final taskDate = DayUtil.iso(DayUtil.addDays(d, inst.dateOffset));
+      // 夜班算在结束那天：任务日期就是这一天。
+      final taskDate = DayUtil.iso(d);
       // 以 shift_date 为准判重：同一「班次实例」无论归属到哪一天，只实例化一次。
       final existing = await db.query(
         AppDatabase.tDaily,
@@ -228,6 +235,33 @@ class TaskRepository extends ChangeNotifier {
     }
   }
 
+  /// 把某天遗留的、**不属于当前班次**的模板实例清掉。
+  ///
+  /// 排班改了（早班 → 中班）或这天不再排班时，旧班次留下的实例如果不清理，
+  /// 那天的清单里就会混进别的班次的任务。只清理「未完成」的实例：已经做完的
+  /// 记录保留，已经被用户删掉的（墓碑）也保持原样。
+  Future<void> _dropStaleInstances(DateTime d, int? shiftTypeId) async {
+    final rows = await Db.instance.query(
+      AppDatabase.tDaily,
+      columns: ['id'],
+      where: 'shift_date = ? AND template_id IS NOT NULL '
+          'AND deleted = 0 AND is_completed = 0'
+          '${shiftTypeId == null ? '' : ' AND shift_type_id <> ?'}',
+      whereArgs: [
+        DayUtil.iso(d),
+        if (shiftTypeId != null) shiftTypeId,
+      ],
+    );
+    if (rows.isEmpty) return;
+    final ids = [for (final row in rows) row['id']];
+    await Db.instance.update(
+      AppDatabase.tDaily,
+      {'deleted': 1},
+      where: 'id IN (${List.filled(ids.length, '?').join(',')})',
+      whereArgs: ids,
+    );
+  }
+
   /// 把某天「由模板生成、尚未完成」的实例与当前模板对齐。
   ///
   /// * 模板改名 / 改提醒 → 同步到实例上；
@@ -292,14 +326,16 @@ class TaskRepository extends ChangeNotifier {
 
   // ------------------------------------------------------------ 查询
 
-  /// 某天的全部任务（跨天班次的任务按结束日归类）。
+  /// 某天的全部任务。
+  ///
+  /// 一天一个班次、任务就写在这一天（夜班也写在结束那天），所以直接按 date 查。
   Future<List<DailyTask>> tasksForDay(DateTime day) async {
     final db = Db.instance;
     final iso = DayUtil.iso(day);
     final rows = await db.query(
       AppDatabase.tDaily,
-      where: '(date = ? OR (shift_date = ? AND date <> ?)) AND deleted = 0',
-      whereArgs: [iso, iso, iso],
+      where: 'date = ? AND deleted = 0',
+      whereArgs: [iso],
       orderBy: 'sort_order ASC, id ASC',
     );
     return rows.map(DailyTask.fromMap).toList();
@@ -309,10 +345,10 @@ class TaskRepository extends ChangeNotifier {
   Future<Map<String, int>> countsByDate(DateTime from, DateTime to) async {
     final rows = await Db.instance.rawQuery(
       '''
-      SELECT COALESCE(date, shift_date) AS d, COUNT(*) AS c
+      SELECT date AS d, COUNT(*) AS c
       FROM ${AppDatabase.tDaily}
       WHERE deleted = 0 AND is_completed = 0 AND parent_id IS NULL
-        AND COALESCE(date, shift_date) >= ? AND COALESCE(date, shift_date) <= ?
+        AND date >= ? AND date <= ?
       GROUP BY d
       ''',
       [DayUtil.iso(from), DayUtil.iso(to)],
@@ -326,9 +362,9 @@ class TaskRepository extends ChangeNotifier {
   Future<List<DailyTask>> tasksInRange(DateTime from, DateTime to) async {
     final rows = await Db.instance.query(
       AppDatabase.tDaily,
-      where: 'COALESCE(date, shift_date) >= ? AND COALESCE(date, shift_date) <= ? AND deleted = 0',
+      where: 'date >= ? AND date <= ? AND deleted = 0',
       whereArgs: [DayUtil.iso(from), DayUtil.iso(to)],
-      orderBy: 'COALESCE(date, shift_date) ASC, sort_order ASC, id ASC',
+      orderBy: 'date ASC, sort_order ASC, id ASC',
     );
     return rows.map(DailyTask.fromMap).toList();
   }
@@ -340,7 +376,7 @@ class TaskRepository extends ChangeNotifier {
       AppDatabase.tDaily,
       where: 'title LIKE ? AND deleted = 0',
       whereArgs: [kw],
-      orderBy: 'COALESCE(date, shift_date) DESC, id DESC',
+      orderBy: 'date DESC, id DESC',
       limit: limit,
     );
     return rows.map(DailyTask.fromMap).toList();
@@ -569,15 +605,28 @@ class TaskRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 清空某天的全部任务（软删除的墓碑也会被清掉）。
-  Future<void> clearDay(DateTime day) async {
-    await Db.instance.delete(
+  /// 清空某天的全部任务（详情页右上角「清空当天任务」用），返回清掉的条数。
+  ///
+  /// 用删除墓碑（deleted = 1）而不是物理删除，为的是让**模板生成的**任务当天
+  /// 不会在下次打开 / 模板改动后又被补回来；只影响这一天，第二天照常生成。
+  Future<int> clearDay(DateTime day) async {
+    final iso = DayUtil.iso(day);
+    final rows = await Db.instance.query(
       AppDatabase.tDaily,
+      columns: ['id'],
       where: 'date = ? AND deleted = 0',
-      whereArgs: [DayUtil.iso(day)],
+      whereArgs: [iso],
     );
-    _ensured.clear();
+    if (rows.isEmpty) return 0;
+    final ids = [for (final row in rows) row['id']];
+    await Db.instance.update(
+      AppDatabase.tDaily,
+      {'deleted': 1},
+      where: 'id IN (${List.filled(ids.length, '?').join(',')})',
+      whereArgs: ids,
+    );
     notifyListeners();
+    return ids.length;
   }
 
   /// 让某天重新生成模板任务（清掉墓碑后重新实例化）。

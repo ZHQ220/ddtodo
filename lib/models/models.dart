@@ -87,11 +87,12 @@ class ShiftType {
 
   bool get isRest => kind == ShiftKind.rest;
 
-  /// 是否跨天（例如 20:00 上班、次日 08:00 下班）。
+  /// 是否属于「夜班」：下班时间不早于上班时间的算白班，否则算夜班
+  /// （例如 22:00 → 07:30 表示**前一天晚上 22:00** 上班、当天早上 07:30 下班）。
   ///
-  /// 不再由任何开关决定：**结束时间不晚于开始时间**就算跨天，
-  /// 这种班次的任务照旧归属到结束日（次日）。
-  bool get crossesMidnight {
+  /// 不再由任何开关决定。注意：夜班的排班与任务**都算在结束那一天**
+  /// （14 号夜班 = 13 号 22:00 → 14 号 07:30，日历只在 14 号显示，任务也在 14 号）。
+  bool get startsPreviousDay {
     final s = _minutesOf(startTime);
     final e = _minutesOf(endTime);
     if (s == null || e == null) return false;
@@ -247,39 +248,20 @@ class TaskTemplate {
       );
 }
 
-/// 排班生成实例（一个「班次实例」= 某天开始的一个班次）。
+/// 排班生成实例（一个「班次实例」= 归属到某一天的一个班次）。
 ///
-/// 跨天班次（如 20:00 → 次日 08:00）的任务归到结束日，因此：
-///   shiftDate  = 班次开始的那天
-///   dateOffset = 任务日期相对开始日的天数（跨天班次为 1）
-///   showsOn    = 任务实际显示的日期 = shiftDate + dateOffset
+/// 夜班（如 22:00 → 07:30）从前一天晚上开始，但**排班与任务都归属结束那天**：
+/// 所以这里的 [shiftDate] 就是「这一天」，任务也直接写在这一天。
 class ScheduleInstance {
   const ScheduleInstance({
     required this.shiftDate,
     required this.shiftTypeId,
-    this.dateOffset = 0,
   });
 
-  /// 班次开始日（yyyy-MM-dd）。
+  /// 班次归属的那一天（yyyy-MM-dd），同时也是任务的 date。
   final String shiftDate;
 
   final int shiftTypeId;
-
-  /// 任务实际显示的日期相对 [shiftDate] 的偏移天数。
-  final int dateOffset;
-
-  /// 任务实际显示的日期（yyyy-MM-dd）。
-  ///
-  /// 由 [shiftDate] 与 [dateOffset] 推导，避免内部字段互相矛盾。
-  String get showsOn => _shift(shiftDate, dateOffset);
-
-  static String _shift(String iso, int days) {
-    final p = iso.split('-');
-    final d = DateTime(int.parse(p[0]), int.parse(p[1]), int.parse(p[2]) + days);
-    return '${d.year.toString().padLeft(4, '0')}-'
-        '${d.month.toString().padLeft(2, '0')}-'
-        '${d.day.toString().padLeft(2, '0')}';
-  }
 }
 
 /// daily_task
@@ -302,13 +284,14 @@ class DailyTask {
 
   final int? id;
 
-  /// 显示日期（跨天班次为结束日）。
+  /// 任务所属日期（`yyyy-MM-dd`）。夜班算在**结束那一天**，所以夜班任务也写这一天。
   final String? date;
 
   /// 生成该任务的班次类型；独立事项为空。
   final int? shiftTypeId;
 
-  /// 生成该任务的班次开始日（跨天归属判定的关键）。
+  /// 该任务属于哪一天的班次（`yyyy-MM-dd`）。现在恒等于 [date]：
+  /// 夜班归属到结束日，一天只有一个班次，所以判重也只看这一天。
   final String? shiftDate;
 
   final String title;

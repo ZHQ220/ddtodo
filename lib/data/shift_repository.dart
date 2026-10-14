@@ -3,12 +3,18 @@ import 'package:sqflite/sqflite.dart';
 
 import '../core/app_colors.dart';
 import '../core/date_utils.dart';
+import '../core/settings_service.dart';
 import '../models/models.dart';
 import 'app_database.dart';
 import 'db.dart';
 
 /// 班次类型与排班周期的读写 + 内存缓存。
 class ShiftRepository extends ChangeNotifier {
+  ShiftRepository(this._settings);
+
+  /// 用来记住「手动指定的生效周期」（未指定时按最近一条自动生效）。
+  final SettingsService _settings;
+
   List<ShiftType> _shiftTypes = [];
   List<ShiftCycle> _cycles = [];
   Map<String, int> _exceptions = {};
@@ -44,8 +50,31 @@ class ShiftRepository extends ChangeNotifier {
 
   Map<String, int> get exceptions => Map.unmodifiable(_exceptions);
 
-  /// 生效中的周期：start_date <= 目标日 且 id 最大（最近创建的优先）。
+  ShiftCycle? byCycleId(int? id) {
+    if (id == null) return null;
+    for (final c in _cycles) {
+      if (c.id == id) return c;
+    }
+    return null;
+  }
+
+  /// 生效中的周期。
+  ///
+  /// 默认规则：`start_date <= 目标日` 且 id 最大（最近创建的优先）。
+  /// 如果用户在某条周期上点过「设为生效」，就优先用这一条：它从
+  /// [SettingsService.activeCycleFrom] 那天起生效，那天之前仍按默认规则算。
   ShiftCycle? activeCycleFor(DateTime date) {
+    final pinnedId = _settings.activeCycleId;
+    if (pinnedId != null) {
+      final pinned = byCycleId(pinnedId);
+      final from = _settings.activeCycleFrom;
+      final startsAt = from == null ? null : DayUtil.tryParseIso(from);
+      if (pinned != null &&
+          (startsAt == null || !DayUtil.dateOnly(date).isBefore(startsAt))) {
+        return pinned;
+      }
+    }
+
     final iso = DayUtil.iso(date);
     ShiftCycle? best;
     for (final c in _cycles) {
@@ -139,6 +168,9 @@ class ShiftRepository extends ChangeNotifier {
   // ---------------------------------------------------------- 周期 CRUD
 
   /// 新建周期：`startDate` 那天即为模式数组的第 1 天，之后无限循环。
+  ///
+  /// 按用户要求：新建之后**自动生效**（清掉之前手动指定的那一条，
+  /// 回到「最近创建的一条生效」的默认规则）。
   Future<int> createCycle({
     required String name,
     required DateTime startDate,
@@ -151,6 +183,7 @@ class ShiftRepository extends ChangeNotifier {
       'pattern': pattern.join(','),
       'created_at': DateTime.now().toIso8601String(),
     });
+    await _settings.setActiveCycle(null);
     await load();
     return id;
   }
@@ -165,8 +198,13 @@ class ShiftRepository extends ChangeNotifier {
     await load();
   }
 
+  /// 删除周期。
+  ///
+  /// 如果删掉的正是手动指定生效的那一条，就取消指定，回到「最近一条自动生效」
+  /// ——效果等同于切回上一条（生效日期比它早、最近的那条）。
   Future<void> deleteCycle(int id) async {
     await Db.instance.delete(AppDatabase.tCycle, where: 'id = ?', whereArgs: [id]);
+    if (_settings.activeCycleId == id) await _settings.setActiveCycle(null);
     await load();
   }
 
@@ -209,6 +247,7 @@ class ShiftRepository extends ChangeNotifier {
     final db = Db.instance;
     await db.delete(AppDatabase.tException);
     await db.delete(AppDatabase.tCycle);
+    await _settings.setActiveCycle(null);
     // 清掉按班次自动生成的任务，保留用户自己加的独立事项。
     await db.delete(
       AppDatabase.tDaily,

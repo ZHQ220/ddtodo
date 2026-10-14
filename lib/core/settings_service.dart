@@ -44,6 +44,34 @@ class SettingsService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ------------------------------------------- 手动指定生效的排班周期
+  //
+  // 没有值 = 不指定：按「生效日期最近的那一条」自动生效（旧行为）。
+  // 在周期列表里点了「设为生效」之后固定用那一条，并从 [_kActiveCycleFrom]
+  // 那天起生效（只影响今天及以后，过去不变）。
+  static const _kActiveCycleId = 'active_cycle_id';
+  static const _kActiveCycleFrom = 'active_cycle_from';
+
+  int? get activeCycleId {
+    final v = _prefs.getInt(_kActiveCycleId);
+    return (v == null || v <= 0) ? null : v;
+  }
+
+  /// 手动指定生效周期的起始日（yyyy-MM-dd）；未指定返回 null。
+  String? get activeCycleFrom => _prefs.getString(_kActiveCycleFrom);
+
+  /// 指定生效周期；`id` 传 null 表示恢复「按最近一条自动生效」。
+  Future<void> setActiveCycle(int? id, {String? from}) async {
+    if (id == null) {
+      await _prefs.remove(_kActiveCycleId);
+      await _prefs.remove(_kActiveCycleFrom);
+    } else {
+      await _prefs.setInt(_kActiveCycleId, id);
+      if (from != null) await _prefs.setString(_kActiveCycleFrom, from);
+    }
+    notifyListeners();
+  }
+
   String? get lastDate => _prefs.getString(_kLastDate);
 
   Future<void> setLastDate(String iso) async {
