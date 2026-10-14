@@ -699,38 +699,87 @@ class _CycleEditorState extends State<_CycleEditor> {
     super.dispose();
   }
 
+  /// 解析「周期天数」输入：兼容全角数字（６）与多余空格；解析不出来返回 null。
+  int? _parseDays(String raw) {
+    final normalized = raw
+        .replaceAllMapped(RegExp(r'[０-９]'),
+            (m) => String.fromCharCode(m[0]!.codeUnitAt(0) - 0xFEE0))
+        .replaceAll(RegExp(r'[^0-9]'), '');
+    if (normalized.isEmpty) return null;
+    return int.tryParse(normalized);
+  }
+
   /// 把周期长度改成 [days] 天：不够的补「空」，多出来的从末尾删掉。
-  void _resizeDays(int days) {
+  ///
+  /// 统一入口：输入框、+ / − 按钮、追加按钮都走这里，
+  /// 每次都换成**新的列表实例**并同步输入框，保证界面一定跟着刷新。
+  void _applyDays(int days) {
     final target = days.clamp(1, _maxDays).toInt();
+    if (target == _pattern.length) {
+      _syncDaysText();
+      return;
+    }
     setState(() {
       if (target > _pattern.length) {
-        _pattern.addAll(List<int>.filled(target - _pattern.length, 0));
-      } else if (target < _pattern.length) {
-        _pattern.removeRange(target, _pattern.length);
+        _pattern = [
+          ..._pattern,
+          ...List<int>.filled(target - _pattern.length, 0),
+        ];
+      } else {
+        _pattern = _pattern.sublist(0, target);
       }
-      _daysController.text = '${_pattern.length}';
-      _daysController.selection =
-          TextSelection.collapsed(offset: _daysController.text.length);
+      _syncDaysText();
     });
+  }
+
+  /// 往周期末尾追加一天（[value] 为班次 id，0 表示留空）。
+  void _appendDay(int value) {
+    // 先收起键盘：否则键盘可能盖住下面的格子/按钮，点哪都没反应。
+    FocusScope.of(context).unfocus();
+    if (_pattern.length >= _maxDays) return;
+    setState(() {
+      _pattern = [..._pattern, value];
+      _syncDaysText();
+    });
+  }
+
+  /// 所有天都留空。
+  void _clearAllDays() {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _pattern = List<int>.filled(_pattern.length, 0);
+    });
+  }
+
+  /// 把输入框里的数字同步成当前天数。
+  void _syncDaysText() {
+    final text = '${_pattern.length}';
+    // 直接赋 .text：光标会自动落到末尾，且不依赖 TextSelection / TextEditingValue。
+    if (_daysController.text != text) _daysController.text = text;
   }
 
   /// 设置第 [index] 天：班次 id，0 表示「空」（那天没有班次、不生成任务）。
   void _setDay(int index, int value) {
     if (index < 0 || index >= _pattern.length) return;
-    setState(() => _pattern[index] = value);
+    setState(() {
+      final next = [..._pattern];
+      next[index] = value;
+      _pattern = next;
+    });
   }
 
   /// 删除第 [index] 天（后面的往前补一位）。
   void _removeDay(int index) {
     if (_pattern.length <= 1) return;
     setState(() {
-      _pattern.removeAt(index);
-      _daysController.text = '${_pattern.length}';
+      _pattern = [..._pattern]..removeAt(index);
+      _syncDaysText();
     });
   }
 
   /// 点某一格：选择这天排什么班，或留空。
   Future<void> _editDay(int index) async {
+    FocusScope.of(context).unfocus();
     final types = widget.state.shifts.shiftTypes.where((s) => !s.archived).toList();
     final picked = await showModalBottomSheet<int>(
       context: context,
@@ -816,6 +865,29 @@ class _CycleEditorState extends State<_CycleEditor> {
     );
   }
 
+  /// 「往周期末尾追加一天」的按钮（比 ActionChip 的点击区域大，不容易点不中）。
+  Widget _appendButton(String label, int value, Color color) {
+    return OutlinedButton(
+      onPressed: () => _appendDay(value),
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(0, 38),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 9,
+            height: 9,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 12.5)),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final types = widget.state.shifts.shiftTypes.where((s) => !s.archived).toList();
@@ -871,48 +943,67 @@ class _CycleEditorState extends State<_CycleEditor> {
               children: [
                 const Text('周期天数', style: TextStyle(fontSize: 13)),
                 const SizedBox(width: 4),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  iconSize: 18,
-                  tooltip: '减一天',
-                  onPressed: () => _resizeDays(_pattern.length - 1),
-                  icon: const Icon(Icons.remove_circle_outline),
-                ),
                 SizedBox(
-                  width: 48,
+                  width: 56,
                   child: TextField(
                     controller: _daysController,
                     keyboardType: TextInputType.number,
+                    textInputAction: TextInputAction.done,
                     textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600),
                     decoration: appInputDecoration(hintText: '7'),
-                    onSubmitted: (v) {
-                      final n = int.tryParse(v.trim());
-                      if (n == null) {
-                        _daysController.text = '${_pattern.length}';
-                        return;
-                      }
-                      _resizeDays(n);
+                    // 输入即生效：不用按回车，下面的格子数量立刻跟着变。
+                    onChanged: (v) {
+                      final n = _parseDays(v);
+                      if (n != null) _applyDays(n);
+                    },
+                    onEditingComplete: () {
+                      _applyDays(
+                          _parseDays(_daysController.text) ?? _pattern.length);
+                      FocusScope.of(context).unfocus();
                     },
                   ),
                 ),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  iconSize: 18,
-                  tooltip: '加一天',
-                  onPressed: () => _resizeDays(_pattern.length + 1),
-                  icon: const Icon(Icons.add_circle_outline),
-                ),
+                const SizedBox(width: 8),
+                Text('当前共 ${_pattern.length} 天',
+                    style: const TextStyle(
+                        fontSize: 12.5, color: AppColors.textSecondary)),
                 const Spacer(),
                 TextButton(
-                  onPressed: () => setState(() {
-                    for (var i = 0; i < _pattern.length; i++) {
-                      _pattern[i] = 0;
-                    }
-                  }),
+                  onPressed: _clearAllDays,
                   child: const Text('全部留空'),
                 ),
               ],
             ),
+            Row(
+              children: [
+                OutlinedButton(
+                  onPressed: () {
+                    FocusScope.of(context).unfocus();
+                    _applyDays(_pattern.length - 1);
+                  },
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 38),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
+                  child: const Text('− 减一天', style: TextStyle(fontSize: 13)),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: () {
+                    FocusScope.of(context).unfocus();
+                    _applyDays(_pattern.length + 1);
+                  },
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(0, 38),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
+                  child: const Text('＋ 加一天', style: TextStyle(fontSize: 13)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
             const Text(
               '点某一格可以改这天排什么班；留空表示那天没有班次、也不生成任务。',
               style: TextStyle(fontSize: 11.5, color: AppColors.textSecondary, height: 1.5),
@@ -932,29 +1023,10 @@ class _CycleEditorState extends State<_CycleEditor> {
               spacing: 8,
               runSpacing: 4,
               children: [
-                ActionChip(
-                  avatar: const CircleAvatar(
-                      radius: 7, backgroundColor: Color(0xFFDDE3E7)),
-                  label: const Text('空'),
-                  onPressed: () => setState(() {
-                    if (_pattern.length >= _maxDays) return;
-                    _pattern.add(0);
-                    _daysController.text = '${_pattern.length}';
-                  }),
-                ),
+                _appendButton('空', 0, const Color(0xFFB6C0C6)),
                 for (final type in types)
-                  ActionChip(
-                    avatar: CircleAvatar(
-                      radius: 7,
-                      backgroundColor: AppColors.fromHex(type.colorHex),
-                    ),
-                    label: Text(type.name),
-                    onPressed: () => setState(() {
-                      if (_pattern.length >= _maxDays) return;
-                      _pattern.add(type.id!);
-                      _daysController.text = '${_pattern.length}';
-                    }),
-                  ),
+                  _appendButton(type.name, type.id!,
+                      AppColors.fromHex(type.colorHex)),
               ],
             ),
           ],
