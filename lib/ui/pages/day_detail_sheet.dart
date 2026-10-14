@@ -176,7 +176,7 @@ class _DayDetailSheetState extends State<DayDetailSheet> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.22),
+                    color: Colors.white.withAlpha(56),
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Row(

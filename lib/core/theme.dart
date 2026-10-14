@@ -82,7 +82,7 @@ class AppTheme {
         ),
         trackColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.selected)
-              ? AppColors.primary.withOpacity(0.5)
+              ? AppColors.primary.withAlpha(128)
               : const Color(0xFFCFD4D9),
         ),
       ),

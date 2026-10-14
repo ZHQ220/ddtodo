@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:ui' show FontFeature;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -110,7 +110,7 @@ class _TimerPageState extends State<TimerPage> {
                         fontSize: 52,
                         fontWeight: FontWeight.w300,
                         color: AppColors.textPrimary,
-                        fontFeatures: [FontFeature.tabularFigures()],
+                        fontFeatures: [ui.FontFeature.tabularFigures()],
                       ),
                     ),
                     Text(

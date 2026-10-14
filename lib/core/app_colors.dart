@@ -44,15 +44,36 @@ class AppColors {
 
   /// 色块的背景（颜色的淡色版），用于日历格内的班次条。
   ///
-  /// 这里用 `withOpacity`（在 3.27+ 上已 deprecated 但仍可用）而不是
-  /// `withValues`，是为了让同一份代码能在 Flutter 3.24 与 3.38 上都能编译。
-  // ignore: deprecated_member_use
+  /// 这里用整型 alpha 的 `withAlpha`，而不是 `withOpacity`：后者从 3.27 起被标记
+  /// deprecated，更新版本里可能已被彻底移除，一旦移除就是「方法不存在」的编译错误。
+  /// `withAlpha(int)` 是长期稳定 API，新旧版本都能编译。
   static Color tint(Color c, [double opacity = 0.16]) =>
-      Color.alphaBlend(c.withOpacity(opacity), Colors.white);
+      Color.alphaBlend(c.withAlpha((opacity * 255).round()), Colors.white);
 
-  // ignore: deprecated_member_use
-  static String toHex(Color c) =>
-      '#${(c.value & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
+  /// 与 [palette] 一一对应的十六进制字符串（顺序必须与 palette 完全一致）。
+  static const List<String> paletteHex = <String>[
+    '#E5484D', // 1 红
+    '#2FB344', // 2 绿
+    '#3B82F6', // 3 蓝
+    '#F59E0B', // 4 橙
+    '#8B5CF6', // 5 紫
+    '#00A8A8', // 6 青
+    '#EC4899', // 7 粉
+    '#0EA5E9', // 8 天蓝
+    '#84CC16', // 9 黄绿
+    '#6B7280', // 10 灰
+  ];
+
+  /// 颜色 → 十六进制字符串。
+  ///
+  /// 不再通过 `Color.value` 反推（该 getter 3.27 起 deprecated，新版可能已移除），
+  /// 而是按调色板索引直接取常量：不依赖任何版本敏感的 API。
+  /// 全项目调用点都只传入 [palette] 里的颜色；万一传入别的颜色，回落到主色。
+  static String toHex(Color c) {
+    final i = palette.indexOf(c);
+    if (i >= 0 && i < paletteHex.length) return paletteHex[i];
+    return '#1F9E8F';
+  }
 
   static Color fromHex(String hex, {Color fallback = primary}) {
     var h = hex.trim().replaceAll('#', '');
