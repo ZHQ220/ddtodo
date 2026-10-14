@@ -56,17 +56,6 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = [
-      CalendarPage(state: state),
-      TaskListPage(key: ValueKey('tasks-$_refreshToken'), state: state),
-      const TimerPage(),
-      StatisticsPage(state: state),
-      SettingsPage(
-        state: state,
-        onDataChanged: () => setState(() => _refreshToken++),
-      ),
-    ];
-
     return Scaffold(
       appBar: AppBar(
         title: Text(_titles[_index]),
@@ -122,11 +111,25 @@ class _HomeShellState extends State<HomeShell> {
         ],
       ),
       // 监听全局状态：月份切换、任务增删、模板改动后立刻刷新当前页面。
-      // 没有这层监听时，左右滑动月份虽然会换页，但标题和「任务数量圆点」不会更新
-      // （滑到的那一个月永远显示不出数字）。
+      //
+      // ⚠️ pages 必须在这里（builder 内部）创建。如果把它建在 build 的最外层，
+      // 每次收到通知时传进去的是**同一个 widget 实例**，Flutter 会认为子树
+      // 没变化而直接跳过重建 —— 表现就是滑月份后标题与任务数量圆点不更新。
       body: ListenableBuilder(
         listenable: state,
-        builder: (context, _) => IndexedStack(index: _index, children: pages),
+        builder: (context, _) {
+          final pages = [
+            CalendarPage(state: state),
+            TaskListPage(key: ValueKey('tasks-$_refreshToken'), state: state),
+            const TimerPage(),
+            StatisticsPage(state: state),
+            SettingsPage(
+              state: state,
+              onDataChanged: () => setState(() => _refreshToken++),
+            ),
+          ];
+          return IndexedStack(index: _index, children: pages);
+        },
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _index,

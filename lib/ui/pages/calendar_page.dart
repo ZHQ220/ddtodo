@@ -64,6 +64,16 @@ class _CalendarPageState extends State<CalendarPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 本页自己也监听一次全局状态：左右滑月时 `AppState.notifyListeners()`
+    // 会让标题（visibleMonth）与每格的任务数量圆点（_counts）立刻重画，
+    // 不依赖外层容器是否重建了这一页。
+    return ListenableBuilder(
+      listenable: state,
+      builder: (context, _) => _body(),
+    );
+  }
+
+  Widget _body() {
     return Column(
       children: [
         _header(),
