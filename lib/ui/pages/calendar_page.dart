@@ -208,6 +208,24 @@ class _CalendarPageState extends State<CalendarPage> {
   }
 }
 
+/// 日期格的分隔线：每格只画「右 + 下」两条，空格子也照画。
+///
+/// 月份第一天前的空位（以及月末后的空位）如果完全不画线，行首/行尾的
+/// 上边框、左边框就会断掉（例如 1 号的左边框、第二行 4~7 号的上边框）。
+const Border _dayCellBorder = Border(
+  right: BorderSide(color: AppColors.divider, width: 0.6),
+  bottom: BorderSide(color: AppColors.divider, width: 0.6),
+);
+
+/// 月初 / 月末的空位：不显示内容，但要保留格子线。
+class _BlankDayCell extends StatelessWidget {
+  const _BlankDayCell();
+
+  @override
+  Widget build(BuildContext context) =>
+      const DecoratedBox(decoration: BoxDecoration(border: _dayCellBorder));
+}
+
 /// 一个月的日期格。
 class _MonthGrid extends StatelessWidget {
   const _MonthGrid({
@@ -253,7 +271,7 @@ class _MonthGrid extends StatelessWidget {
               itemBuilder: (context, index) {
                 final dayNumber = index - offset + 1;
                 if (dayNumber < 1 || dayNumber > daysInMonth) {
-                  return const SizedBox.shrink();
+                  return const _BlankDayCell();
                 }
                 final date = DateTime(month.year, month.month, dayNumber);
                 return _DayCell(
@@ -301,10 +319,7 @@ class _DayCell extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       child: Container(
         decoration: BoxDecoration(
-          border: Border(
-            right: const BorderSide(color: AppColors.divider, width: 0.6),
-            bottom: const BorderSide(color: AppColors.divider, width: 0.6),
-          ),
+          border: _dayCellBorder,
           color: selected && shiftColor != null
               ? AppColors.tint(shiftColor, 0.10)
               : (selected ? AppColors.tint(AppColors.primary, 0.08) : null),
